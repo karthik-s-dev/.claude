@@ -1,0 +1,460 @@
+@@ retry-policy | Retry Policy
+ev: E3
+cls: PARTIAL evidence (RES-03); generic baseline for outbound calls
+std: RES-03, INT-01, MSG-03
+rel: exponential-backoff, resilient-http-communication, message-retry-strategy, timeout-management, idempotency-management, external-api-client
+d: Use when adding retries to outbound calls, datastore operations or background deliveries - which failures are retryable, attempt limits, delay, idempotency requirement and where retries live (client vs outbox). No shared retry helper is approved; outbox attempts and Redis retryStrategy are the evidenced forms.
+scope: When and how to retry.
+app: Node services.
+purpose: Bounded, safe retries that do not amplify outages.
+when:
+- A transient dependency failure is expected.
+org:
+- VERIFIED forms: outbox `attempts` with max (`*_MAX_ATTEMPTS`), Redis `retryStrategy: min(times*200, cap)`, inline Mongo retry `MAX_RETRY_ATTEMPTS=3`/`RETRY_DELAY_MS=100`, webhook `WEBHOOK_DELIVERY_MAX_ATTEMPTS`. No retry helper is used by either reference service.
+- MUST: Retry only idempotent or idempotency-keyed operations and only transient failures (timeouts, connection resets, 5xx, 429 with `Retry-After`); never retry 4xx validation/auth errors.
+- MUST: Attempts and delays are configurable with safe defaults; every retry logs `warn` with attempt number and `err`; exhaustion raises the typed unavailable error.
+- MUST: Request-path retries consume the request's timeout budget; durable work retries through the outbox, not in the request.
+- GENERIC: Implement one local `withRetry(fn, { maxAttempts, delayMs, backoffMultiplier, maxDelayMs })` helper per service instead of hand-rolled loops; add jitter.
+impl:
+- Decide location (inline vs outbox); wrap call; test exhaustion.
+ex: ts | Using a local helper (GENERIC)
+const data = await withRetry(() => callDependency(id), { maxAttempts: 3, delayMs: 200, backoffMultiplier: 2, maxDelayMs: 2000 });
+/ex
+fail:
+- Exhausted retries -> typed unavailable error -> 503/502.
+test:
+- Fake timers: attempts, delays, non-retryable errors not retried.
+anti:
+- Retry storms; retrying non-idempotent POSTs; retry inside retry.
+check:
+- Transient only; bounded; idempotent; logged; budgeted.
+
+@@ exponential-backoff | Exponential Backoff
+ev: E3
+cls: PARTIAL evidence (linear/min-capped forms) / generic baseline
+std: RES-03, MSG-03
+rel: retry-policy, message-retry-strategy, resilient-http-communication, outbox-pattern
+d: Use when spacing retries - multiplier, cap, jitter. Reference code uses capped incremental delays (Redis min(times*200, 2000), config outbox min(60s*attempts, 15min)) and a generic backoff multiplier; no jitter exists. Provides the generic baseline.
+scope: Delay computation.
+app: Node.
+purpose: Avoid synchronized retries.
+when:
+- Implementing delays.
+org:
+- VERIFIED: Capped incremental delays in Redis `retryStrategy` and the outbox; a generic helper supports a multiplier and `maxDelayMs`.
+- GENERIC: `delay = min(maxDelay, base * 2^(attempt-1))` with full jitter `random(0, delay)`; document base/cap in config.
+- MUST: A cap is always set.
+impl:
+- Implement once in a helper and reuse.
+ex: ts | GENERIC
+const delay = Math.min(maxMs, baseMs * 2 ** (attempt - 1)); await sleep(Math.random() * delay);
+/ex
+fail:
+- N/A.
+test:
+- Deterministic RNG; cap respected.
+anti:
+- Fixed tight retry.
+check:
+- Cap; jitter; config.
+
+@@ timeout-management | Timeout Management
+ev: E2
+cls: VERIFIED (RES-02)
+std: RES-02, CFG-05, ERR-02, API-10
+rel: external-api-client, redis-client, mongodb-client, resilient-http-communication, idempotency-management
+d: Use when setting or reviewing timeouts - every outbound call, Redis command, Mongo operation, webhook delivery and the request-level budget for write APIs (base plus per-item scaling, 504 fail-closed).
+scope: Timeout budgets.
+app: Node services.
+purpose: No unbounded waits.
+when:
+- Any I/O.
+org:
+- MUST: Explicit timeout on each dependency from env: `CONFIG_SERVICE_TIMEOUT_MS=5000`, `REDIS_CONNECT_TIMEOUT_MS`, `REDIS_COMMAND_TIMEOUT_MS`, `WEBHOOK_DELIVERY_TIMEOUT_MS`, Mongo `serverSelectionTimeoutMS=5000`, `socketTimeoutMS=45000`, `connectTimeoutMS=10000`.
+- MUST: Write APIs have a request budget (`CHECK_AND_RECORD_TIMEOUT_MS` + `CHECK_AND_RECORD_TIMEOUT_PER_METRIC_MS` per item); exceeding it returns **504 `REQUEST_TIMEOUT`** (fail-closed: never record `allowed:true` under an idempotency key), releases the idempotency key and logs.
+- MUST: Inner timeouts are shorter than the request budget; health checks have their own short timeouts.
+- GENERIC: Propagate cancellation with `AbortController` (not evidenced).
+impl:
+- Add timeout config; race the operation against the budget; release resources on timeout.
+ex: ts | Budgeted operation
+const budgetMs = config.checkAndRecordTimeoutMs + metrics.length * config.checkAndRecordTimeoutPerMetricMs;
+const result = await Promise.race([handle(req), rejectAfter(budgetMs, V2Errors.requestTimeout())]);
+/ex
+fail:
+- Timeout -> catalogued 504; resources released.
+test:
+- Fake timers; release on timeout.
+anti:
+- Infinite default timeouts.
+check:
+- Every call bounded; budget; release.
+
+@@ circuit-breaker | Circuit Breaker
+ev: E2
+cls: VERIFIED (RES-01, Redis only) / generic for HTTP
+std: RES-01, RES-02, INT-02
+rel: caching-strategy, fallback-mechanism, resilient-http-communication, graceful-degradation, redis-client
+d: Use when repeated dependency failures should short-circuit calls - consecutive-failure threshold, open cooldown, probe on close, fallback. The reference implements a breaker for Redis only (5 failures, 15 s); outbound HTTP breakers are a gap (generic baseline).
+scope: Breaker semantics.
+app: Node.
+purpose: Protect latency and the dependency.
+when:
+- A cache/optional dependency fails intermittently.
+org:
+- VERIFIED: Breaker around cache calls: `consecutiveFailures` increments on error, opens for `BREAKER_COOLDOWN_MS=15000` after `BREAKER_FAILURE_THRESHOLD=5`, success resets; while open calls return the fallback immediately and log at `debug`; opening logs `warn`.
+- MUST: Thresholds/cooldown configurable (reference constants are hard-coded).
+- GENERIC: HTTP dependency breakers follow the same state machine (closed/open/half-open); do not add a breaker library without approval.
+- MUST: A breaker must always have a defined fallback (`fallback-mechanism`).
+impl:
+- Reuse the cache module's breaker; extend with env config.
+ex: ts | State (reference)
+if (Date.now() < breakerOpenUntil) return fallback;
+// on failure: if (++consecutiveFailures >= THRESHOLD) breakerOpenUntil = Date.now() + COOLDOWN_MS;
+/ex
+fail:
+- Open breaker = degraded, not failed.
+test:
+- Open after N failures; probe after cooldown; reset on success.
+anti:
+- Breakers without fallback.
+check:
+- Thresholds; fallback; logs.
+
+@@ bulkhead-pattern | Bulkhead Pattern
+ev: E3
+cls: PARTIAL (bounded concurrency only) / generic
+std: RES-06, RES-07
+rel: bounded-concurrency, fault-isolation, graceful-degradation, background-worker-processing
+d: Use when one workload could starve another - separate pools/limits per dependency or per workload. The reference only caps concurrent fan-out and batch sizes; no pool partitioning exists (generic baseline).
+scope: Resource isolation.
+app: Node.
+purpose: Contain overload.
+when:
+- Fan-out to many subscribers/dependencies.
+org:
+- VERIFIED: `mapWithConcurrency(items, limit, fn)`, `WEBHOOK_INLINE_DELIVERY_CONCURRENCY`, queue batch <= 32, per-worker `running` guards.
+- GENERIC: Separate worker flags and batch limits per workload; separate Redis/Mongo pool settings only where measured.
+- MUST: Do not add bulkhead libraries without approval.
+impl:
+- Apply concurrency caps and per-workload flags.
+ex: ts | Cap
+await mapWithConcurrency(subscribers, config.webhooks.inlineConcurrency, deliver);
+/ex
+fail:
+- Overload -> shed/queue, never unbounded.
+test:
+- Concurrency never exceeds the cap.
+anti:
+- `Promise.all` over unbounded lists.
+check:
+- Caps; flags.
+
+@@ fallback-mechanism | Fallback Mechanism
+ev: E2
+cls: VERIFIED (RES-01, INT-02, DB-05)
+std: RES-01, INT-02, DB-05, ERR-09
+rel: caching-strategy, circuit-breaker, graceful-degradation, fail-open-fail-closed-policy, dependency-failure-handling
+d: Use when a dependency fails and an alternative answer exists - cache miss falls back to the source of truth, stale cache within a max window, record-only mode, skip optional notifications. Each fallback must be explicit, logged and never fabricate data.
+scope: Fallback choices.
+app: Node services.
+purpose: Predictable degraded behaviour.
+when:
+- Designing for dependency outage.
+org:
+- VERIFIED fallbacks: cache error -> source of truth (Mongo); upstream subscription lookup fails -> serve cached copy within `SUBSCRIPTION_CACHE_STALE_MAX_MS` else typed unavailable error; unavailable and not blocking -> record-only with `enforcementStatus:"skipped"`; lock contention -> run unlocked; pricing missing -> skip credits calculation and log.
+- MUST: Never fall back to fabricated/unlimited values for authorization or quota decisions in blocking mode.
+- MUST: Every fallback logs once at `warn` with the dependency and reason.
+impl:
+- Document the fallback next to the call; test both paths.
+ex: ts | Stale-within-window
+if (cached && Date.now() - cached.fetchedAt <= staleMaxMs) return cached.subscription;   // else rethrow ConfigServiceUnavailableError
+/ex
+fail:
+- Beyond the window -> unavailable error.
+test:
+- Fresh, stale-in-window, stale-out-of-window.
+anti:
+- `return null` on error.
+check:
+- Explicit; logged; bounded.
+
+@@ graceful-degradation | Graceful Degradation
+ev: E2
+cls: VERIFIED (RES-01, RES-07, INT-02)
+std: RES-01, RES-07, INT-02, OBS-04
+rel: fallback-mechanism, fail-open-fail-closed-policy, circuit-breaker, health-endpoint-implementation, fault-isolation
+d: Use when deciding what a service still does when non-critical dependencies are down - optional broker, notifications, cache, outbox disabled - and how this is surfaced in readiness (degraded vs unavailable) and in the API (207, skipped markers).
+scope: Degraded operation modes.
+app: Services.
+purpose: Core function survives partial outages, visibly.
+when:
+- Classifying dependencies.
+org:
+- MUST: Classify each dependency as mandatory or optional (`SERVICE_BUS_MANDATORY`); optional failures degrade (warn, skip, outbox) and are visible: readiness `degraded`/`skipped`, API `207` with `auditPublished:false`, events `enforcementStatus:"skipped"`.
+- MUST: Mandatory dependency failure makes readiness 503 (do not serve).
+- VERIFIED: Cache outage degrades latency only; notification channel outage never blocks usage recording.
+impl:
+- Add the classification table to the README.
+ex: text | Table
+Redis (counters) mandatory | Mongo mandatory | Service Bus optional unless SERVICE_BUS_MANDATORY | Notifications optional | Cache optional
+/ex
+fail:
+- N/A.
+test:
+- Each optional down.
+anti:
+- Treating optional as mandatory silently.
+check:
+- Classified; surfaced.
+
+@@ fault-isolation | Fault Isolation
+ev: E3
+cls: PARTIAL (RES-07)
+std: RES-07, MSG-07
+rel: background-worker-processing, bulkhead-pattern, graceful-degradation, dependency-failure-handling
+d: Use when preventing one failure from cascading - per-item try/catch in workers, independent worker flags, optional integrations isolated from the main path, no shared fate in startup index creation.
+scope: Containing failures.
+app: Services.
+purpose: Local failures stay local.
+when:
+- Writing loops/workers/integrations.
+org:
+- VERIFIED: per-item and per-batch try/catch; workers started independently and individually disable-able; best-effort notifications swallowed with log; index creation failure only warns (note: hides unindexed risk).
+- MUST: A failing item must not stop later items; a failing optional integration must not fail the request.
+- GENERIC: Prefer separate processes for heavy workers (`SERVICE_ROLE` split - not implemented).
+impl:
+- Wrap per item; log; mark failed.
+ex: ts | Per item
+for (const item of batch) { try { await handle(item); } catch (err) { logger.warn({ id: item.id, err: serializeError(err) }, "Item failed"); } }
+/ex
+fail:
+- Failed items recorded.
+test:
+- One bad item among many.
+anti:
+- Single try around the whole loop.
+check:
+- Isolation; recorded.
+
+@@ rate-limiting | Rate Limiting (Service & Dependency Level)
+ev: E0
+cls: GENERIC (service/dependency-level); API-level is canonical in `api-rate-limiting`
+std: RES-08, API-09
+rel: api-rate-limiting, retry-policy, bounded-concurrency, external-api-client, circuit-breaker
+d: Use when limiting the service's own outbound rate to dependencies or controlling consumption of a shared resource (client-side throttling, queue consumption rate, per-tenant quotas). Inbound HTTP limiting is in api-rate-limiting; business quota enforcement is a product feature. No dependency-level limiter exists in the reference repos (generic baseline).
+scope: Outbound/dependency-level throttling.
+app: Node.
+purpose: Avoid overloading dependencies and breaching provider limits.
+when:
+- Calling rate-limited providers; fan-out jobs.
+org:
+- MUST NOT confuse: `api-rate-limiting` (inbound HTTP, 429 `RATE_LIMITED`-style) vs **quota enforcement** (business rule, 429 `USAGE_LIMIT_EXCEEDED`, `usage` services) vs this skill (outbound throttling).
+- GENERIC: Cap concurrency (`bounded-concurrency`) first; honour `Retry-After`; token-bucket client throttle per dependency configured via env.
+- MUST: Approval before adding a limiter library.
+impl:
+- Start with concurrency caps and batch sizes.
+ex: ts | GENERIC
+if (res.status === 429) await sleep(parseRetryAfterMs(res.headers["retry-after"]) ?? backoff);
+/ex
+fail:
+- Persistent 429 -> unavailable error.
+test:
+- Retry-After honoured.
+anti:
+- Retrying 429 immediately.
+check:
+- Distinguished; capped.
+
+@@ dependency-failure-handling | Dependency Failure Handling
+ev: E1
+cls: VERIFIED (INT-02, ERR-09, RES-01)
+std: INT-02, ERR-09, RES-01, RES-02, OBS-04
+rel: fail-open-fail-closed-policy, integration-error-handling, technical-exception-handling, fallback-mechanism, graceful-degradation, startup-dependency-validation
+d: Use when writing code that depends on Redis, Mongo, a broker or another service - classify dependency criticality, bound calls, choose fail-open vs fail-closed, surface degradation, and log with hints. Umbrella skill linking the specific resilience skills.
+scope: Dependency failure strategy.
+app: Services.
+purpose: Predictable outage behaviour per dependency.
+when:
+- Adding a dependency or reviewing outage behaviour.
+org:
+- MUST: For each dependency record: criticality (mandatory/optional), timeout, failure policy (fail-closed/fail-open), fallback, retry location, readiness inclusion, log/alert signal.
+- VERIFIED policies: Redis cache -> fail-open to Mongo; Redis counters/idempotency -> surface 503 (fail-closed); Reference service A -> fail-closed when blocking, stale window otherwise; Service Bus -> outbox, optional unless mandatory; notifications -> best-effort.
+- MUST: "Absent" and "unavailable" are never conflated (`ERR-09`).
+impl:
+- Add the table to the module header or README.
+ex: text | Dependency table
+Dependency | Critical | Timeout | Policy | Fallback
+Redis cache | no | 150ms | fail-open | Mongo
+Upstream service | yes (blocking mode) | 5s | fail-closed | stale<=maxMs
+/ex
+fail:
+- Per table.
+test:
+- One test per row.
+anti:
+- Unspecified behaviour.
+check:
+- Table complete; tests.
+
+@@ graceful-shutdown | Graceful Shutdown
+ev: E1
+cls: VERIFIED (ARCH-03) with defects in both repos (C-22)
+std: ARCH-03, RES-04, MSG-07, OBS-01
+rel: service-registration-lifecycle, background-worker-processing, logger-initialization, database-connection-management, liveness-readiness-checks
+d: Use when handling SIGTERM/SIGINT - stop workers, stop accepting connections, drain in-flight requests with a bound, close dependencies, flush logs, then exit. Corrects the reference order (both close dependencies before the server drains).
+scope: Shutdown sequence.
+app: Node HTTP services in containers.
+purpose: No dropped requests or lost logs on deploy.
+when:
+- Editing shutdown code; investigating errors on deploy.
+org:
+- MUST order: (1) set shutting-down flag (readiness 503), (2) `stopXWorker()` for all workers, (3) `server.close(cb)` **awaited** with a bounded timeout (`unref`ed), (4) close dependencies (`closeRedis`, `closeMongo`, `closeServiceBus`, ...), (5) `closeLogger()`, (6) `process.exit(0)`; second signal or timeout -> exit(1).
+- MUST: Register handlers for both SIGTERM and SIGINT; use `dumb-init` as PID 1 in containers (`docker-containerization`).
+- MUST: Each close is wrapped `.catch(warn)` so one failure doesn't block the rest.
+- VERIFIED defects: reference service A closes Redis/Mongo/logger **before** `server.close()`; reference service B calls `server.close()` without awaiting and then closes clients.
+impl:
+- Use the skeleton in `service-registration-lifecycle`.
+ex: ts | Drain helper
+const drain = (server: http.Server, ms: number) => new Promise<void>((resolve) => { const t = setTimeout(resolve, ms).unref(); server.close(() => { clearTimeout(t); resolve(); }); });
+/ex
+fail:
+- Timeout exceeded -> log `warn` and continue closing.
+test:
+- Mock server/clients; assert order.
+anti:
+- Closing DB first.
+- `process.exit` immediately.
+check:
+- Order; bounded; both signals.
+
+@@ resilient-http-communication | Resilient HTTP Communication
+ev: E3
+cls: PARTIAL (timeout, auth fail-closed, typed error) / generic retry+breaker
+std: INT-01, RES-02, RES-03, RES-01, ERR-09
+rel: external-api-client, retry-policy, circuit-breaker, timeout-management, http-client-management, integration-error-handling
+d: Use when making an outbound HTTP call must tolerate failures - timeout, typed unavailable error, fail-closed auth, optional retry with backoff for idempotent calls, optional breaker, durable outbox for must-deliver notifications. Builds on external-api-client.
+scope: Resilience layers for HTTP calls.
+app: Node axios.
+purpose: Dependable inter-service calls.
+when:
+- Calls on critical paths.
+org:
+- VERIFIED: timeout always set; token failure aborts; failures typed; durable outbox for notifications that cannot be lost; stale cache fallback.
+- NOT EVIDENCED (generic baseline): retries with backoff+jitter, HTTP circuit breaker, bulkhead, `AbortController` cancellation.
+- MUST: Layer order: timeout -> (retry for idempotent only) -> breaker -> fallback -> typed error; document each in the integration module.
+- MUST: Do not add `axios-retry`/`opossum`/`cockatiel` without approval; prefer one local `withRetry` helper.
+impl:
+- Start with `external-api-client`; add retry only for idempotent GETs/keyed POSTs.
+ex: ts | Idempotent GET with retry
+const res = await withRetry(() => getDependencyClient().get("/subscriptions/" + id), { maxAttempts: 3, delayMs: 200, backoffMultiplier: 2, maxDelayMs: 2000 });
+/ex
+fail:
+- Exhausted -> `DependencyUnavailableError`.
+test:
+- 5xx then success; permanent 4xx not retried.
+anti:
+- Unbounded retry; retry POST without key.
+check:
+- Layers documented; approvals.
+
+@@ bounded-concurrency | Bounded Concurrency
+ev: E2
+cls: VERIFIED (RES-06)
+std: RES-06, CFG-05
+add: A reusable helper capping parallel I/O and returning ordered settled results (mapWithConcurrency) is used for fan-out and deserves its own standard.
+rel: webhook-delivery, bulkhead-pattern, background-worker-processing, rate-limiting, query-optimization
+d: Use when performing N-way parallel I/O (webhook fan-out, batch lookups, notifications) - cap in-flight work with a configurable limit and return settled results in order for partial-success handling.
+scope: Concurrency cap helper.
+app: Node.
+purpose: Avoid unbounded Promise.all.
+when:
+- Mapping async work over lists.
+org:
+- MUST: Use a concurrency-limited map (`mapWithConcurrency(items, limit, fn)`) returning `PromiseSettledResult` in input order; limit configurable (`WEBHOOK_INLINE_DELIVERY_CONCURRENCY`).
+- MUST: Handle rejected results (log, count, partial success).
+impl:
+- Reuse the shared util; add tests.
+ex: ts | Helper (reference-style)
+export async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (t: T, i: number) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
+  const out: PromiseSettledResult<R>[] = new Array(items.length); let next = 0;
+  const worker = async () => { while (next < items.length) { const i = next++; try { out[i] = { status: "fulfilled", value: await fn(items[i], i) }; } catch (reason) { out[i] = { status: "rejected", reason }; } } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+/ex
+fail:
+- Rejections never abort siblings.
+test:
+- Max in-flight equals limit; order preserved.
+anti:
+- `Promise.all(items.map(...))` on large lists.
+check:
+- Limit; ordered; rejections handled.
+
+@@ fail-open-fail-closed-policy | Fail-Open / Fail-Closed Policy
+ev: E2
+cls: VERIFIED (INT-02, CFG-03, CFG-04)
+std: INT-02, CFG-03, CFG-04, ERR-09, CTX-03
+add: Reference service B's explicit policy model (record_only vs enforce, fail-open markers, bounded replay, fail-closed writes on timeout, never-open security) is a distinct, cross-cutting decision framework.
+rel: dependency-failure-handling, fallback-mechanism, idempotency-management, environment-specific-configuration, graceful-degradation
+d: Use when a decision depends on whether to allow or block when a check cannot be performed - quota/subscription gates, authentication, idempotency store, notifications - applying the organization's rules: security fails closed, correctness stores surface errors, optional features fail open and are marked.
+scope: Failure-mode policy.
+app: Services.
+purpose: Deliberate, documented allow/deny under failure.
+when:
+- Any gate or check with a dependency.
+org:
+- MUST: **Security controls fail closed** (auth, internal key, webhook signature, SSRF) outside local/dev; never default open.
+- MUST: **Correctness stores surface errors** (idempotency store, usage counters): 503 + `Retry-After`; fail open only per operation with written approval naming downstream dedupe.
+- VERIFIED: **Quota/subscription gate**: `ENFORCEMENT_DEFAULT=enforce|record_only` (non-prod default `record_only`); blocking deployments fail closed on unavailable subscription data (`ConfigServiceUnavailableError`), record-only deployments record and never block; `UsageReadError` raised in blocking deployments.
+- VERIFIED: **Fail-open answers are marked** (non-enumerable `markFailOpen`), published with `enforcementStatus:"skipped"` + `failOpenReason`, and replayed under an idempotency key only briefly (`IDEMPOTENCY_FAILOPEN_TTL_SECONDS=30`, `IDEMPOTENCY_FAILOPEN_MAX_REPLAYS=3`).
+- VERIFIED: Timeout on write path -> fail closed (504), never store `allowed:true`.
+- MUST: Record the policy per gate in docs and config; test both modes.
+impl:
+- Add policy table; implement marker; test.
+ex: text | Policy table
+auth: closed | idempotency store: closed(503) | quota (prod): closed | quota (devtest): record_only | cache: open | notifications: open(best-effort)
+/ex
+fail:
+- Per table.
+test:
+- Both modes per gate.
+anti:
+- Boolean "bypass" flags for security in prod.
+check:
+- Table; marker; tests.
+
+@@ fatal-error-process-policy | Fatal Error Process Policy
+ev: E2
+cls: VERIFIED (RES-04) reference service A only
+std: RES-04, OBS-01, ARCH-03
+add: Crash-on-fatal (log, flush, exit 1) for uncaughtException/unhandledRejection exists in one reference service and is absent in the other; it is a required reliability policy.
+rel: graceful-shutdown, service-registration-lifecycle, structured-logging, exception-handling
+d: Use when configuring process-level error handlers - on uncaughtException or unhandledRejection log with the logger, give logs a short flush window, then exit(1) so the orchestrator restarts a clean instance; never resume.
+scope: Process-level fatal handling.
+app: Node.
+purpose: No zombie instances holding corrupt state.
+when:
+- Writing bootstrap.
+org:
+- MUST: Register both handlers early in bootstrap (after logger init): `logger.error(err instanceof Error ? err : new Error(String(err)), "Fatal <kind> - exiting"); setTimeout(() => process.exit(1), 250).unref();`.
+- MUST: Do not swallow or resume; fire-and-forget promises use `void p.catch(logError)` so expected failures do not become fatal.
+- VERIFIED gap: reference service B registers no handlers - add them.
+impl:
+- Add to bootstrap; test with mocks.
+ex: ts | Reference
+function crashOnFatal(kind: "uncaughtException" | "unhandledRejection", error: unknown) {
+  logger.error(error instanceof Error ? error : new Error(String(error)), "Fatal " + kind + " - exiting");
+  setTimeout(() => process.exit(1), 250).unref();
+}
+process.on("uncaughtException", (e) => crashOnFatal("uncaughtException", e));
+process.on("unhandledRejection", (r) => crashOnFatal("unhandledRejection", r));
+/ex
+fail:
+- Exit code 1.
+test:
+- Handler invokes logger then exit (mocked).
+anti:
+- Continue after uncaughtException.
+check:
+- Both handlers; flush; exit 1.

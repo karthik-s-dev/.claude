@@ -1,0 +1,349 @@
+@@ azure-blob-storage-client | Azure Blob Storage Client
+ev: E0
+cls: GENERIC (no organizational evidence in reference repos)
+std: INT-05, INT-06, SEC-02, CFG-01
+rel: azure-sdk-client-management, file-upload-download, file-streaming, azure-managed-identity, integration-error-handling
+d: Use when a service stores or reads blobs with @azure/storage-blob. Neither reference repository uses Blob Storage, so this is a generic baseline built on the organization's SDK-client, configuration and Managed-Identity conventions - not an organizational standard.
+scope: Blob client setup and usage.
+app: Node.js `@azure/storage-blob`.
+purpose: Consistent blob access without inventing a competing client pattern.
+when:
+- A feature needs blob storage.
+org:
+- GENERIC: Follow the `azure-sdk-client-management` pattern - lazy singleton `BlobServiceClient`, `getX()/closeX()`, config from env (`AZURE_STORAGE_ACCOUNT_URL`, container name), readiness ping only if blob is critical.
+- GENERIC: Prefer `DefaultAzureCredential` (Managed Identity) over connection strings (consistent with `azure-managed-identity`; C-13 shows connection strings are the current messaging practice).
+- GENERIC: Stream large content (`file-streaming`); set timeouts/retry options on the client; never put SAS tokens or account keys in logs.
+- MUST: Obtain approval for the dependency version and container naming; record in an ADR.
+impl:
+- Create `integrations/blobStorage.ts`; wrap SDK errors via `integration-error-handling`; add tests with an in-memory double.
+ex: ts | GENERIC client module
+let service: BlobServiceClient | null = null;
+export function getBlobService(): BlobServiceClient {
+  if (!service) service = new BlobServiceClient(config.blob.accountUrl, new DefaultAzureCredential());
+  return service;
+}
+/ex
+fail:
+- 404 blob -> `null`/catalog not-found; 403/5xx/timeouts -> unavailable mapping.
+sec:
+- Private containers; short-lived SAS only when unavoidable; validate names; scan uploads.
+test:
+- Fake client; not-found; auth failure.
+anti:
+- Per-request client creation.
+- Public containers.
+check:
+- Approved; env; identity; mapping.
+
+@@ azure-sdk-client-management | Azure SDK Client Management
+ev: E2
+cls: VERIFIED (INT-06)
+std: INT-06, ARCH-04, CFG-01, ARCH-03
+rel: azure-service-connection-management, azure-service-bus-client, azure-queue-storage-client, dependency-injection, mocking-test-doubles
+d: Use when creating or reviewing any Azure SDK client in Node (Service Bus, Queue Storage, Identity, Blob) - lazy module singleton, cached senders/clients, env configuration, configured-check, readiness probe, close on shutdown, test override.
+scope: Lifecycle of Azure SDK clients.
+app: Node.js Azure SDKs.
+purpose: One client per resource, correctly closed and testable.
+when:
+- Adding an Azure SDK dependency.
+org:
+- MUST: Client is a lazy singleton returned by `getX()` that returns `null` (optional integration) or throws a catalogued config error (mandatory) when configuration is absent; cached child objects (senders) in a `Map`.
+- MUST: Provide `isXConfigured()`, a lightweight health check proving credentials (e.g., create sender), and `closeX()` closing children then the client.
+- MUST: Provide a test seam (`__setXForTests`) or rely on module mocking per repo.
+- MUST: Configuration from environment (`SERVICE_BUS_CONNECTION_STRING`, `AZURE_QUEUE_STORAGE_CONNECTION_STRING`, `AZURE_SERVICE_OAUTH_SCOPE`) via the config module.
+- VERIFIED: Token acquisition uses `generateAuthToken()` from `@inextlabs/azure-oauth` (wraps `DefaultAzureCredential`); do not construct credentials ad hoc elsewhere.
+impl:
+- Follow the module template; wire close into shutdown.
+ex: ts | Template
+let client: ServiceBusClient | null = null; const senders = new Map<string, ServiceBusSender>();
+export const isConfigured = () => Boolean(config.serviceBus.connectionString?.trim());
+async function getClient() { if (!isConfigured()) return null; return (client ??= new ServiceBusClient(config.serviceBus.connectionString)); }
+export async function closeServiceBus() { for (const s of senders.values()) await s.close().catch(() => undefined); senders.clear(); await client?.close(); client = null; }
+/ex
+fail:
+- Missing mandatory config -> startup validation failure.
+test:
+- Configured/unconfigured paths; close idempotent.
+anti:
+- Clients in request handlers.
+- Never closing.
+check:
+- Singleton; configured-check; health; close; seam.
+
+@@ azure-service-connection-management | Azure Service Connection Management
+ev: E2
+cls: VERIFIED (INT-06, CFG-07) / auth C-13
+std: INT-06, CFG-07, SEC-02, CFG-02
+rel: azure-sdk-client-management, azure-managed-identity, configuration-security, startup-dependency-validation, secrets-management
+d: Use when deciding how a service authenticates to Azure resources - Managed Identity for HTTP APIs, connection strings for Service Bus/Queue Storage/Redis/Mongo today - and how those secrets are supplied, validated and rotated.
+scope: Connection credentials for Azure resources.
+app: Azure-hosted Node services.
+purpose: Right credential type, no secrets in code.
+when:
+- Adding a resource connection.
+org:
+- VERIFIED: Entra-protected HTTP APIs: Managed Identity bearer via `generateAuthToken(scope)` (`AZURE_SERVICE_OAUTH_SCOPE`); Service Bus/Queue Storage/Redis/Mongo: connection strings/keys from environment.
+- MUST: Prefer identity-based access for **new** Azure resources when the SDK supports it **and** approval exists; until C-13 is decided keep the connection-string contract and label identity as "adapter pending approval".
+- MUST: Validate presence at startup (mandatory ones); mask on logs.
+- MUST: Rotation: values come from platform settings (not rebuilt images); services re-read on restart.
+impl:
+- Document each resource's credential type in README config table.
+ex: text | Table
+Resource | Credential | Env
+Upstream service API | Managed Identity | AZURE_SERVICE_OAUTH_SCOPE
+Service Bus | connection string | SERVICE_BUS_CONNECTION_STRING
+/ex
+fail:
+- Token failure for an authenticated HTTP dependency aborts the call (fail closed).
+test:
+- Missing credential; token failure.
+anti:
+- Keys in code/config files.
+check:
+- Documented; validated; masked.
+
+@@ external-api-client | External API Client
+ev: E1
+cls: VERIFIED (INT-01, INT-02, CTX-02, ERR-09) - the organization's data-fetching pattern
+std: INT-01, INT-02, CTX-02, ERR-09, RES-02, SEC-02, OBS-02
+rel: http-client-management, integration-error-handling, resilient-http-communication, service-to-service-authentication, dependency-failure-handling, retry-policy
+d: Use whenever code fetches data from or calls another service or external HTTP API - client creation, headers, Managed-Identity auth, correlation propagation, timeouts, response parsing, 404-as-absent vs unavailable, error transformation, logging, caching, cancellation and tests. This is the canonical data-fetching and failure-propagation pattern.
+scope: Outbound HTTP calls to services and APIs.
+app: Node.js `axios` (reference); contract applies to any HTTP client.
+purpose: Every outbound call is bounded, authenticated, traceable, and reports failures in a way callers cannot misread.
+when:
+- Adding any outbound HTTP call.
+- Reviewing code that treats HTTP errors as empty results.
+org:
+- MUST **client**: one lazily created client per dependency (`axios.create({ baseURL, timeout: <DEP>_TIMEOUT_MS (default 5000), headers: { "Content-Type": "application/json" } })`) in an integration module (`<dependency>-http.ts`); base URL and timeout from config; test reset hook (`__resetXClientForTests`).
+- MUST **auth**: when `AZURE_SERVICE_OAUTH_SCOPE` is set, a request interceptor adds `Authorization: Bearer <generateAuthToken()>`; **if the scope is set and the token cannot be obtained, abort the request** with a typed unavailable error (status 401) - never call the dependency unauthenticated; when the scope is unset (local/dev) requests go without a token. Internal key services use `x-internal-api-key` + `x-internal-api-caller`.
+- MUST **correlation**: send `x-correlation-id` from the ambient context on every call (`CTX-02`); never fatal if absent.
+- MUST **response contract**: functions return typed data or `null`: **`null` = the dependency answered 404 / confirmed absence**; **any other failure throws a typed `XUnavailableError(message, status?)`** (timeout, network, 5xx, auth failure, other 4xx). Callers must never convert the throw into "empty/unlimited" (`ERR-09`).
+- MUST **logging**: info for confirmed absence (with ids), `error` for failures with context (ids, URL path, status, message) and a remediation `hint`; never log tokens/bodies.
+- MUST **timeouts**: always set; no unbounded waits; write-path budget `CHECK_AND_RECORD_TIMEOUT_MS` style where the API defines one.
+- MUST **upstream effect**: failures map to 502/503/504 catalog entries at the edge (`error-propagation`); the downstream's raw body/status is not forwarded.
+- MUST **best-effort calls** (notifications): skip with a log when URL/key unset, catch+log failures (`warn` + `serializeError`), and use the outbox when loss is harmful (`outbox-pattern`).
+- GENERIC (not evidenced): retries with backoff and jitter, circuit breaker and `AbortController` cancellation are not implemented in the reference; see `retry-policy`, `circuit-breaker`, `timeout-management`. The shared `withRetry` is exported but unused.
+- MUST: Caching of results follows `caching-strategy` including a stale window.
+impl:
+- Create the integration module with `getClient()`, one function per operation, and the error mapper.
+- Write the mapper: 404 -> `null`; else log + throw typed error.
+- Wire the typed error to a catalog entry in the error middleware / service.
+- Add tests (below).
+ex: ts | Client + mapper (reference pattern)
+let client: AxiosInstance | null = null;
+export function getDependencyClient(): AxiosInstance {
+  if (!client) {
+    client = axios.create({ baseURL: config.dep.baseUrl, timeout: config.dep.timeoutMs, headers: { "Content-Type": "application/json" } });
+    client.interceptors.request.use(async (req) => {
+      if (!process.env.AZURE_SERVICE_OAUTH_SCOPE) return req;
+      try { req.headers["Authorization"] = "Bearer " + (await generateAuthToken()); const cid = getCorrelationId(); if (cid) req.headers["x-correlation-id"] = cid; return req; }
+      catch (err) { logger.error({ err: serializeError(err) }, "Token acquisition failed - aborting request"); throw new DependencyUnavailableError("Token acquisition failed", 401); }
+    });
+  }
+  return client;
+}
+export function mapRequestError(err: unknown, ctx: { id: string; url: string }): null {
+  const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+  if (status === 404) { logger.info({ id: ctx.id }, "Dependency reports no record"); return null; }
+  logger.error({ ...ctx, status, err: serializeError(err), hint: "Check DEP_BASE_URL and that the service is running" }, "Dependency call failed");
+  throw new DependencyUnavailableError("Failed to call dependency: " + (err instanceof Error ? err.message : String(err)), status);
+}
+/ex
+fail:
+- Absent -> `null`; unavailable -> typed error -> 503/502; request budget exceeded -> 504; never silent empty.
+sec:
+- Tokens never logged; base URL from config only; for client-supplied URLs use the SSRF guard (`ssrf-protection`).
+test:
+- Mock axios: 200, 404 (-> null), 500/timeout/network (-> typed error), token failure (no request sent), correlation header present, cache-stale behaviour.
+anti:
+- `catch { return [] }`.
+- Per-call `axios.get` without timeout.
+- Logging response bodies.
+- Retrying non-idempotent calls without idempotency keys.
+check:
+- Timeout; auth; correlation; null/throw contract; mapping; tests.
+
+@@ http-client-management | HTTP Client Management
+ev: E2
+cls: VERIFIED (INT-01) / C-16
+std: INT-01, CFG-05, ARCH-04
+rel: external-api-client, resilient-http-communication, timeout-management, mocking-test-doubles, request-header-management
+d: Use when creating, sharing, configuring or testing axios (or other HTTP) client instances - singleton per dependency, base URL and timeout from config, interceptors, no global defaults, connection reuse, reset for tests.
+scope: HTTP client instances.
+app: Node.js axios.
+purpose: Predictable shared clients.
+when:
+- Adding a dependency client; changing interceptors.
+org:
+- MUST: One shared instance per dependency; `baseURL`, `timeout` and default headers from the config module; interceptors for auth/correlation (not per-call code).
+- MUST: Do not mutate global `axios.defaults`; do not create a client per request (note: a reference notification module uses per-call `axios.post` with a 10 s timeout - acceptable for one-off best-effort calls, not for the main path; C-16).
+- MUST: Provide `__resetXClientForTests()` to drop the instance so interceptors/env re-apply.
+- GENERIC: Reuse keep-alive agents for high-throughput clients.
+impl:
+- Follow `external-api-client` template.
+ex: ts | Reset hook
+export function __resetDependencyClientForTests(): void { client = null; }
+/ex
+fail:
+- See `external-api-client`.
+test:
+- Interceptor unit tests.
+anti:
+- `axios.get(url)` bare.
+check:
+- Singleton; config; interceptors; reset.
+
+@@ third-party-service-integration | Third-Party Service Integration
+ev: E2
+cls: VERIFIED (INT-04, INT-03)
+std: INT-04, INT-03, MSG-05, CFG-06, CFG-01
+rel: external-api-client, webhook-signature-verification, ssrf-protection, feature-flag-management, integration-error-handling
+d: Use when integrating third-party providers (billing webhooks, push notification, email via Logic App/HTTP, chat channels) - isolate behind a module, enable by flag, verify inbound signatures, validate outbound URLs, store credentials in env, and fail safely.
+scope: Third-party integrations.
+app: Node services.
+purpose: Contain vendor specifics and risks.
+when:
+- Adding a vendor integration.
+org:
+- MUST: One module per vendor (for example a push-notification module and a channel dispatcher); channel enabled by `NOTIFICATION_<CHANNEL>_ENABLED`; credentials (`FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`, `LOGIC_APP_EMAIL_URL`, `<PROVIDER>_WEBHOOK_SECRET`) only from env; private keys handle newline escapes; none logged.
+- MUST: Inbound vendor webhooks verified by signature over the raw body (`webhook-signature-verification`); outbound calls follow `external-api-client`.
+- MUST: Vendor failures never fail the primary operation unless contractually required; log and rely on retry/outbox.
+- MUST: Isolate vendor payload shapes with an adapter/normalizer (`config-subscription-normalizer` style) so domain code is vendor-neutral.
+impl:
+- Add module, flag, env docs, adapter, tests with a stub.
+ex: ts | Channel gate
+if (!config.notifications.portalEnabled) { logger.debug("Portal notifications disabled"); return { sent: false, reason: "disabled" }; }
+/ex
+fail:
+- Provider failure -> `warn`, queue retry.
+sec:
+- Secrets; least privilege service account; validate callback hosts.
+test:
+- Stub vendor client; disabled channel; failure path.
+anti:
+- Vendor SDK calls from controllers.
+- Logging vendor payloads.
+check:
+- Module; flag; adapter; verified inbound.
+
+@@ file-upload-download | File Upload & Download
+ev: E0
+cls: GENERIC (no organizational evidence)
+std: INT-05, SEC-06, API-05
+rel: azure-blob-storage-client, file-streaming, request-validation, api-security, security-review
+d: Use when an API accepts or serves files. No upload/download endpoints exist in the reference repositories; this is a generic baseline layered on validation, security and error standards.
+scope: File transfer endpoints.
+app: Express + blob storage.
+purpose: Safe file handling.
+when:
+- Adding upload/download.
+org:
+- GENERIC: Enforce max size and allowed MIME types/extensions (validate magic bytes), generate server-side file names, store outside the web root/in private blob containers, stream (don't buffer), scan for malware, return signed short-lived download URLs or stream through an authenticated route.
+- MUST: Authenticate/authorize per tenant; log metadata (name hash, size), not content; errors via the catalog (`FILE_TOO_LARGE` 413, `UNSUPPORTED_MEDIA_TYPE` 415 - new catalog entries via `error-catalog-management`).
+- MUST: Configure `express.json({ limit })` and multipart limits explicitly (no body-size limit exists in the reference - gap).
+impl:
+- Use a multipart parser with limits; stream to storage; add contract tests.
+ex: text | Catalog additions (GENERIC)
+FILE_TOO_LARGE 413 | UNSUPPORTED_MEDIA_TYPE 415
+/ex
+fail:
+- Partial upload cleanup.
+sec:
+- Path traversal, zip bombs, content sniffing.
+test:
+- Oversize, wrong type, auth.
+anti:
+- Client-supplied paths.
+check:
+- Limits; storage; auth; errors.
+
+@@ file-streaming | File Streaming
+ev: E0
+cls: GENERIC (no organizational evidence)
+std: INT-05, RES-02
+rel: file-upload-download, azure-blob-storage-client, timeout-management, bounded-concurrency
+d: Use when moving large payloads between HTTP and storage without buffering - pipeline streams with back-pressure, timeouts, abort handling and bounded concurrency. Generic baseline (no streaming code in the reference repos).
+scope: Streaming I/O.
+app: Node streams.
+purpose: Constant memory for large transfers.
+when:
+- Large files/exports.
+org:
+- GENERIC: Use `stream.pipeline` (promise form) with error propagation; set read/write timeouts; destroy streams on client abort (`req.on("close")`); cap concurrency (`bounded-concurrency`); never `Buffer.concat` unbounded.
+- MUST: Respect headers (`Content-Type`, `Content-Length`) and correlation; log start/end/size.
+impl:
+- Wrap in a helper with abort handling.
+ex: ts | GENERIC
+await pipeline(blobDownloadStream, res);   // errors propagate; client abort destroys both ends
+/ex
+fail:
+- Mid-stream failure: abort response; cannot send an envelope after headers - log with correlation.
+test:
+- Abort, slow consumer, large payload memory bound.
+anti:
+- Reading whole file into memory.
+check:
+- Pipeline; timeouts; abort.
+
+@@ external-dependency-configuration | External Dependency Configuration
+ev: E1
+cls: VERIFIED (CFG-01, CFG-05, INT-01)
+std: CFG-01, CFG-02, CFG-05, INT-01, RES-02
+rel: required-environment-variables, optional-environment-variables, external-api-client, startup-dependency-validation, configuration-management
+d: Use when adding configuration for an external dependency - base URL, timeout, credentials/scope, enable flag, cache TTLs, stale windows - naming, defaults, validation and documentation.
+scope: Config keys for each external dependency.
+app: Node services.
+purpose: Every dependency is configurable, bounded and documented.
+when:
+- Adding a dependency.
+org:
+- MUST: Group by prefix: `<DEP>_BASE_URL` (required if mandatory), `<DEP>_TIMEOUT_MS` (default 5000), `<DEP>_INTERNAL_API_KEY`/`INTERNAL_API_KEY_<CALLER>`, `AZURE_SERVICE_OAUTH_SCOPE` (when Entra-protected), cache `*_CACHE_TTL_MS`, `*_STALE_MAX_MS`, `*_MAX_ENTRIES`.
+- MUST: URL trailing slashes normalized; product prefix included in the base URL when applicable (`DEP_BASE_URL=https://host/<product>`).
+- MUST: Document in `.env.example` and README; mandatory dependencies validated at startup.
+impl:
+- Add keys with defaults and bounds; add readiness/startup checks.
+ex: text | .env.example block
+CONFIG_SERVICE_BASE_URL=http://localhost:3000   # REQUIRED
+CONFIG_SERVICE_TIMEOUT_MS=5000
+SUBSCRIPTION_CACHE_TTL_MS=30000
+SUBSCRIPTION_CACHE_STALE_MAX_MS=...
+/ex
+fail:
+- Missing mandatory -> startup failure.
+test:
+- Config parsing tests.
+anti:
+- Hard-coded URLs.
+check:
+- Prefix; defaults; docs; validated.
+
+@@ integration-error-handling | Integration Error Handling
+ev: E1
+cls: VERIFIED (ERR-09, INT-01, INT-02)
+std: ERR-09, INT-01, INT-02, ERR-05, API-10
+rel: external-api-client, exception-to-error-mapping, dependency-failure-handling, technical-exception-handling, error-propagation
+d: Use when handling failures from external systems - classify (absent, rejected, unavailable, timeout), map to catalog (502/503/504), choose fail-open or fail-closed, log with context and hints, and avoid leaking upstream details.
+scope: Failure handling at integration boundaries.
+app: Any integration.
+purpose: Predictable, safe behaviour when a dependency misbehaves.
+when:
+- Any integration module.
+org:
+- MUST classification: **absent** (404 -> `null`/not-found), **rejected** (4xx other -> specific catalog entry or `CONFIG_SERVICE_ERROR`-style 502 for upstream-contract failures), **unavailable** (5xx/network/timeout/token failure -> typed unavailable error -> 503/502), **budget exceeded** (504).
+- MUST: Policy per dependency (`fail-open-fail-closed-policy`): blocking enforcement dependencies fail **closed**; optional ones fail open and are marked.
+- MUST: Log context + hint; response contains this service's own code/message.
+- VERIFIED: Catalog entries for integration failures: `ENFORCEMENT_SERVICE_ERROR` / `WEBHOOK_CALL_FAILED` (502), `CONFIG_SERVICE_ERROR` (502), `REDIS_UNAVAILABLE` / `SERVICE_BUS_UNAVAILABLE` (503), `REQUEST_TIMEOUT` (504).
+impl:
+- Add the mapping table to the module header comment; test each class.
+ex: text | Mapping table
+404 -> null | 4xx -> CONFIG_SERVICE_ERROR(502) | 5xx/timeout/network -> unavailable(503) | token failure -> unavailable(503, status 401 internal)
+/ex
+fail:
+- As above.
+test:
+- Each class.
+anti:
+- Same handling for 404 and 500.
+check:
+- Classes; policy; mapping; logs.

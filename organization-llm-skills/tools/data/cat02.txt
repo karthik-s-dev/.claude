@@ -1,0 +1,742 @@
+@@ api-design-standards | API Design Standards
+ev: E2
+cls: VERIFIED (API-01 shared parts), UNRESOLVED (route naming C-14)
+std: API-01, API-02, API-03, API-04, API-10
+rel: api-request-structure, api-response-structure, api-error-response, api-versioning, request-validation, swagger-openapi, http-status-codes
+d: Use when designing, adding or reviewing HTTP endpoints - paths, methods, internal vs public namespaces, versioning prefix, envelopes, headers and status codes - so new APIs match the organization's contract conventions.
+scope: Endpoint design decisions for REST-style services.
+app: Express services (reference); contract is stack-neutral.
+purpose: Gives every service a recognizable API shape and keeps clients from special-casing each service.
+when:
+- Designing a new endpoint or resource.
+- Reviewing an API change for contract consistency.
+- Deciding path/method/status for an operation.
+org:
+- MUST: Version appears as a path prefix (`/api/v2/...` or `/v2/...`); health endpoints are unversioned.
+- MUST: Internal (service-to-service) endpoints sit in a separate namespace (`/api/v2/internal/...`) with internal-key auth (SEC-03).
+- MUST: Every response uses the standard envelopes (API-02, API-03) and sets `x-correlation-id`.
+- MUST: All input validated before use (`request-validation`); all failures catalogued (`api-error-response`).
+- VERIFIED: Resource style in the aliased reference service: plural nouns, nested sub-resources (`/clients/:clientId/bots/:botId/configs/:configType`), state changes as `POST .../{id}/refresh`, capability-named endpoints, static paths mounted before parameterized.
+- UNRESOLVED: The other reference service uses action endpoints (`POST /v2/check`, `/check-and-record`, `/record-usage-event`) (C-14). Follow the target repo's style; use resource style for CRUD-like new APIs and action endpoints only where the operation is not a resource state change.
+impl:
+- List the existing routes of the target service and mirror their style.
+- Choose method by semantics (GET read, PUT replace, PATCH partial, POST create/action, DELETE remove).
+- Define request schema, response DTO, error codes and status mapping before coding.
+- Add OpenAPI entries (`swagger-openapi`) and contract tests (`api-contract-testing`).
+ex: ts | Route definition (reference style)
+router.use(correlationIdMiddleware);
+router.get("/clients/:clientId/bots/:botId/configs/:configType",
+  validateAuthToken(), validate(GetConfigOfBotSchema, "params"), getConfigOfBot);
+router.post("/clients/:clientId/bots/:botId/refresh", validateAuthToken(), resetConfig);
+/ex
+fail:
+- Unknown route -> catalogued 404 `RESOURCE_NOT_FOUND`; wrong method -> 405 through the same envelope.
+sec:
+- Internal namespace must never be reachable without the internal key; do not put identifiers that grant access in URLs without authorization checks.
+test:
+- Contract tests per endpoint covering the envelope and status mapping.
+anti:
+- Verbs in resource paths where a resource noun exists.
+- Raw `res.json` bodies.
+- Endpoints without auth by omission.
+- Ad-hoc 400s outside the catalog.
+check:
+- Path/method style matches the repo.
+- Envelope, headers, validation, errors, docs, tests present.
+
+@@ api-request-structure | API Request Structure
+ev: E2
+cls: VERIFIED (API-04, API-05)
+std: API-04, API-05, CTX-01, CTX-03
+rel: request-validation, correlation-id-management, idempotency-management, api-design-standards, request-header-management
+d: Use when defining or reviewing what an API request carries - path params, query, JSON body, headers (correlation, idempotency, internal key, client/bot identifiers) and tenant identity - and how it is validated and bound to the authenticated principal.
+scope: Shape of inbound requests and where each piece of information may come from.
+app: JSON/HTTP APIs.
+purpose: Makes request contracts predictable and prevents identity spoofing through duplicate identifiers.
+when:
+- Adding an endpoint.
+- Deciding where a field (identifier, key, flag) belongs.
+org:
+- MUST: Correlation comes only from `x-correlation-id` (never body/query) (CTX-01).
+- MUST: Write operations that can be retried carry the `Idempotency-Key` header (ADR default: header only, no body fallback) (CTX-03).
+- MUST: Every tenant/client identifier present in path, query or body must be consistent with the authenticated principal's claim; reject mismatches with a 403 catalogued error (reference: client-claim binding).
+- MUST: Body is JSON validated against a schema per segment; unknown/forbidden fields are rejected where the contract says a value is server-calculated (`CALCULATED_METRIC_FORBIDDEN` pattern).
+- VERIFIED: Header constants (`HEADERS`) come from one module; lowercase names.
+- UNRESOLVED: One reference service still reads an idempotency key from the body as well (C-07) - do not copy.
+impl:
+- Define a schema for params, query and body.
+- Declare which headers are required and map them via `request-header-management`.
+- Add the identity-consistency check in auth/validation middleware, not in each handler.
+- Document in OpenAPI.
+ex: ts | Schema per segment (Zod, where the repo uses Zod)
+export const UpdateConfigSchema = z.object({ configName: z.string().min(1), value: z.unknown() }).strict();
+export const ClientAndBotIdsSchema = z.object({ clientId: z.string().min(1), botId: z.string().min(1) });
+router.put("/clients/:clientId/bots/:botId/config", validate(ClientAndBotIdsSchema, "params"), validate(UpdateConfigSchema, "body"), updateConfig);
+/ex
+fail:
+- Violations return `VALIDATION_FAILED` (400) with safe `details`; identity mismatch returns 403.
+test:
+- Missing/extra/invalid fields; mismatched identifiers; absent idempotency key on a write.
+anti:
+- Accepting identity from the body when the token already carries it.
+- Reading correlation or idempotency from the body.
+- Accepting unvalidated JSON.
+check:
+- Schemas for all segments; headers declared; identity consistency enforced; docs updated.
+
+@@ api-response-structure | API Response Structure
+ev: E2
+cls: UNRESOLVED (C-06) with VERIFIED parts
+std: API-02, API-03, API-06, CTX-01
+rel: api-error-response, response-dto-mapping, response-serialization, api-pagination, http-status-codes
+d: Use when writing or reviewing success responses of an API - the success envelope, metadata with correlation ID and timestamp, lists, partial-success (207) and headers - and when a controller is about to write a raw body.
+scope: Success response contract.
+app: JSON/HTTP APIs.
+purpose: One predictable success shape symmetrical with the error envelope so clients and logs can be cross-referenced by correlation ID.
+when:
+- Adding any response.
+- Seeing `res.json(...)` in a controller.
+org:
+- MUST: Success responses carry `success: true`, `data`, and `metadata.correlationId` + `metadata.timestamp`; they are produced by a shared helper (`sendSuccess`), never hand-built in controllers (API-02).
+- MUST: Do not mix enveloped and raw responses within one API surface.
+- UNRESOLVED: Whether `message` is included (reference helper includes it; decided in C-06) and the pagination placement (C-06, C-09). Follow the target service's helper; do not invent a third shape.
+- VERIFIED: **207 Multi-Status** is used when the main operation succeeded but an auxiliary step (audit/event publish) failed; the body flags it (`auditPublished: false`) (API-10).
+- VERIFIED: `x-correlation-id` echoed as a response header.
+impl:
+- Use the target service's success helper; add one if the service has none, mirroring the envelope above.
+- Map domain results to response DTOs first (`response-dto-mapping`).
+- For partial success return 207 and set the flag; never hide the failure.
+ex: ts | Success helper (reference)
+export function sendSuccess<T>(req: Request, res: Response, data: T, message = "Request completed successfully", statusCode = 200): void {
+  res.status(statusCode).json({
+    success: true, message, data,
+    metadata: { correlationId: req.correlationId ?? getCorrelationId() ?? "unknown", timestamp: new Date().toISOString() },
+  });
+}
+/ex
+fail:
+- Failures never use this helper; they flow to the error middleware (`api-error-response`).
+test:
+- Assert `success`, `data`, `metadata.correlationId`, `metadata.timestamp`, header.
+anti:
+- Bare arrays/objects as responses.
+- Different success shapes per controller.
+- Returning 200 when a durable step failed.
+check:
+- Helper used everywhere; metadata present; 207 semantics for partial success.
+
+@@ api-error-response | API Error Response
+ev: E1
+cls: MANDATED (ARCH-LLD-003 envelope, API-03)
+std: API-03, ERR-01, ERR-02, ERR-05, ERR-06, ERR-07, API-10
+rel: error-catalog-management, error-code-standards, exception-to-error-mapping, http-status-codes, global-exception-handling
+d: Use whenever an API returns or must return an error: building the error envelope, choosing the catalog entry and HTTP status, handling unknown errors, validation failures, CORS/rate-limit rejections. Always reuses the canonical error catalog and the single error middleware.
+scope: Error response contract and how it is produced.
+app: JSON/HTTP APIs using `@inextlabs/platform-errors`.
+purpose: Clients branch on stable codes and never see internals; every error carries the correlation ID.
+when:
+- Adding an error path to an endpoint.
+- Handling a new failure type (CORS, rate limit, timeout, dependency).
+- Reviewing hand-written error bodies.
+org:
+- MUST: Body is exactly `{ success:false, error:{ code, numericCode, message, details? }, metadata:{ correlationId, timestamp } }`, built by `{ success:false, ...formatError(appError, correlationId) }` (ARCH-LLD-003).
+- MUST: `code` and `numericCode` come from the service's error catalog (`error-catalog-management`, `error-code-standards`); no ad-hoc codes (`RATE_LIMITED`, `TENANT_ID_INVALID` outside the catalog are defects).
+- MUST: Only the global error middleware writes error bodies; handlers `throw`/`next(err)`.
+- MUST: `details` contains caller-supplied, public-safe context only (ERR-07).
+- MUST: Wrap non-`AppError` into `UNHANDLED_ERROR` before formatting; `formatError` alone yields `UNKNOWN_ERROR`/`"0"` (ERR-05).
+- VERIFIED: Status mapping per `http-status-codes`; 5xx logged at `error`, 4xx at `warn` with route metadata only (ERR-06).
+impl:
+- Find the catalog entry (or add one via `error-catalog-management`).
+- Throw it with safe `details`.
+- Confirm the route chain ends in the surface's error middleware.
+ex: ts | Throw and respond
+if (!client) throwConfigError("CLIENT_CONFIG_NOT_FOUND", { clientId });   // catalog entry -> AppError(404, ...)
+// error middleware (single place)
+return res.status(appError.statusCode).json({ success: false, ...formatError(appError, correlationId) });
+/ex
+fail:
+- A 429 from a rate limiter, a CORS rejection and an auth failure must use the same envelope with catalogued codes.
+sec:
+- Never include stack, driver messages, connection strings or SQL/Mongo operators in `details` or `message`.
+test:
+- Snapshot of the envelope; test that an unknown thrown value becomes `UNHANDLED_ERROR` with no `details`.
+anti:
+- `res.status(400).json({ error: "bad" })`.
+- Branching client logic on `message`.
+- Returning `err.message` to clients.
+check:
+- Envelope exact; catalogued; correlation present; no leaks.
+
+@@ http-status-codes | HTTP Status Codes
+ev: E1
+cls: VERIFIED (API-10)
+std: API-10, ERR-02
+rel: api-error-response, error-catalog-management, api-response-structure, exception-to-error-mapping
+d: Use when choosing or reviewing HTTP status codes for responses and catalog entries (400/401/403/404/409/412/429/502/503/504/207/410). Encodes the organization's mapping, including quota-exceeded 429, idempotency 409s and partial-success 207.
+scope: Status code selection and error-category mapping.
+app: HTTP APIs.
+purpose: Consistent status semantics across services and between catalog entries and responses.
+when:
+- Adding catalog entries.
+- Mapping a dependency failure or business rule to a status.
+org:
+- MUST: 400 validation/malformed; 401 unauthenticated; 403 authenticated but not allowed (incl. CORS rejection, client-claim mismatch); 404 confirmed absence; 409 idempotency key reuse with different payload or duplicate in progress; 412 optimistic-concurrency conflict; 429 rate limit or **quota exceeded** (with `Retry-After` where known); 502 upstream returned an error; 503 dependency unavailable (cache, broker, auth misconfigured); 504 request budget exceeded; 410 retired route.
+- MUST: **207** when the primary operation succeeded but audit/event publication failed.
+- MUST: Business-rule violations map to 4xx; do not map them to 500 (reference defect: `BOT_INFO_NOT_FOUND`, `RUNTIME_FIELD_MISSING`).
+- VERIFIED: Catalog grouping follows these classes; sequence banding is described in `error-code-standards`.
+impl:
+- Choose the status by who can fix it: caller (4xx), service/dependency (5xx).
+- Store the status in the catalog entry; controllers never choose statuses for errors.
+ex: text | Mapping table
+validation 400 | unauthenticated 401 | forbidden 403 | not found 404 | idempotency conflict/in-progress 409
+version conflict 412 | quota exceeded/rate limited 429 | upstream error 502 | dependency unavailable 503 | timeout 504 | partial success 207 | retired 410
+/ex
+fail:
+- Unknown failure -> 500 `UNHANDLED_ERROR`.
+test:
+- Parameterized test: each catalog key -> expected status.
+anti:
+- 200 with an error body.
+- 500 for caller mistakes.
+- 404 for authorization failures that should be 403 (unless deliberately hiding existence, then document).
+check:
+- Each new catalog entry has a justified status.
+
+@@ request-validation | Request Validation
+ev: E1
+cls: TECH (Zod in aliased repo; manual in other, C-03)
+std: API-05, ERR-02
+rel: api-request-structure, request-dto-mapping, query-parameter-management, api-error-response, error-catalog-management
+d: Use when validating request params, query or body, writing schemas, or reviewing endpoints with ad-hoc `if (!x)` checks. Enforces schema-per-segment validation producing the catalogued VALIDATION error.
+scope: Input validation at the API boundary.
+app: Express (Zod in the reference service that uses it).
+purpose: Reject bad input uniformly before any business logic and give clients structured, safe details.
+when:
+- Adding or changing an endpoint input.
+- Reviewing handlers that read `req.body` directly.
+org:
+- MUST: Validate every segment (`params`, `query`, `body`) with a schema; a failure throws the catalogued validation error (`VALIDATION_FAILED`/`VALIDATION_ERROR`, 400) - never an ad-hoc response.
+- MUST: Log validation failure at `warn` with `path`, `segment` and flattened issues, never the raw body.
+- MUST: Write the parsed/coerced data back (`req[segment] = result.data`) so handlers consume validated data.
+- TECH: Where the target depends on Zod, use `validate(schema, segment)` middleware; where it does not, use explicit validators that throw `V2Errors.badRequest(message, [{ field, reason }])`. Do not add Zod to a repo that lacks it without approval (C-03).
+- VERIFIED: Security-sensitive extras: https-only callback URLs plus SSRF guard (`ssrf-protection`), enumerations validated against catalog.
+impl:
+- Write the schema next to the route (`schemas/<resource>.schema.ts`).
+- Mount `validate(schema, "params")` etc. after auth and before the controller.
+- Make schemas strict for write bodies.
+ex: ts | validate middleware (reference)
+export function validate(schema: ZodSchema, segment: "body" | "query" | "params" = "body") {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    const result = schema.safeParse((req as any)[segment]);
+    if (!result.success) {
+      logger.warn({ path: req.originalUrl, segment, issues: result.error.flatten() }, "Request validation failed");
+      throwConfigError("VALIDATION_FAILED", result.error.flatten());
+    }
+    (req as any)[segment] = result.data;
+    next();
+  };
+}
+/ex
+fail:
+- Invalid input -> 400 envelope with `details`; no partial processing.
+sec:
+- Validate sizes and formats (max lengths, enum membership) to bound abuse; configure an explicit body size limit (generic hardening, not evidenced).
+test:
+- One failing test per field rule; extra fields; type coercion boundaries.
+anti:
+- Validation inside services after side effects.
+- Trusting TypeScript types as validation.
+- Logging `req.body` on failure.
+check:
+- All segments validated; errors catalogued; parsed data used.
+
+@@ request-dto-mapping | Request DTO Mapping
+ev: E2
+cls: VERIFIED (ARCH-02), GENERIC naming
+std: ARCH-02, API-05
+rel: layered-architecture, request-validation, response-dto-mapping, clean-architecture
+d: Use when converting validated request data into service inputs or domain types, renaming wire fields, or when services receive `req` objects. Keeps mapping explicit in controllers/mappers and transport types out of services.
+scope: Mapping from validated request to service input.
+app: TypeScript services.
+purpose: Isolates the wire contract from domain logic and enables contract evolution (renames at the boundary).
+when:
+- Adding an endpoint or changing field names.
+- Wire name differs from internal name.
+org:
+- MUST: Services accept plain typed inputs; they never receive `Request`.
+- VERIFIED: Wire/internal names may differ and are converted at the boundary (producer converts `tenantId -> clientId` at the last step `toWirePayload`).
+- VERIFIED: Schemas live in `schemas/`; inferred types (`z.infer`) are the request DTO types where Zod is used.
+- GENERIC: DTO naming `<Operation>Request` / `<Operation>Response` and mapper functions `toXResponse` / `fromXRequest` (no explicit org naming evidence beyond `*.schema.ts`).
+impl:
+- Define the schema, infer or declare the DTO type.
+- Map in the controller: `const input = { clientId: req.params.clientId, ...req.body }`.
+- Keep mapper functions pure and tested.
+ex: ts | Last-step wire conversion (pattern)
+export function toWirePayload(p: InternalEvent): Record<string, unknown> {
+  const { tenantId, ...rest } = p;          // internal name
+  return { ...rest, clientId: tenantId };   // wire name
+}
+/ex
+fail:
+- Mapping failures are programming errors -> `UNHANDLED_ERROR`; validate first so they cannot occur from user input.
+test:
+- Mapper unit tests including renamed and optional fields.
+anti:
+- Passing `req.body` through to repositories.
+- Mapping inside repositories.
+- Silent field drops.
+check:
+- Explicit mapping; names documented; mapper tested.
+
+@@ response-dto-mapping | Response DTO Mapping
+ev: E2
+cls: VERIFIED (API-02), GENERIC naming
+std: API-02, ARCH-02, OBS-03
+rel: api-response-structure, request-dto-mapping, response-serialization, sensitive-data-masking-in-logs
+d: Use when shaping data returned to clients from persistence documents or upstream payloads. Ensures explicit response DTOs, no leakage of internal fields (keys, endpoints, connection strings, internal ids) and consistent field naming.
+scope: Mapping domain/persistence data to response payloads.
+app: TypeScript services.
+purpose: Prevents exposing storage shape and secrets; keeps the API stable when persistence changes.
+when:
+- Returning documents from Mongo/Mongoose.
+- Adding fields to a response.
+org:
+- MUST: Return mapped DTOs, never raw documents; strip `_id`/`__v` and internal fields unless part of the contract.
+- MUST: Fields named `key`, `endpoint`, `connectionString`, tokens or secrets are never returned except by explicitly authorized internal endpoints, and are masked in logs (OBS-03).
+- VERIFIED: Normalizers convert upstream payloads into internal entries before use (adapter) and entitlements are typed as boolean features or numeric limits.
+- GENERIC: Prefer `lean()` projections and explicit selected fields.
+impl:
+- Write `toXResponse(doc)` returning only contract fields.
+- Apply it before `sendSuccess`.
+- Add a contract test (`api-contract-testing`).
+ex: ts | Mapper
+export const toBotConfigResponse = (d: BotConfigDoc) => ({ botId: d.botId, clientId: d.clientId, enabled: d.enabled, updatedAt: d.updatedAt.toISOString() });
+/ex
+fail:
+- Missing optional fields yield omitted keys, not `null` surprises, unless the contract says otherwise.
+test:
+- Assert absence of internal fields.
+anti:
+- `res.json(doc)`.
+- Serializing Mongoose documents directly.
+check:
+- DTO mapper used; no secrets; contract test.
+
+@@ request-header-management | Request Header Management
+ev: E1
+cls: VERIFIED (API-04, CTX-02)
+std: API-04, CTX-01, CTX-02, CTX-03, SEC-03, SEC-05
+rel: correlation-id-management, idempotency-management, service-to-service-authentication, internal-api-key-authentication, cors-policy, http-client-management
+d: Use when reading, validating, setting or propagating HTTP headers - correlation, idempotency key, internal API key and caller, authorization, client/bot IDs, retry-after, deprecation/sunset - inbound, outbound and in CORS configuration.
+scope: Header names, parsing, propagation and CORS exposure.
+app: HTTP services.
+purpose: Single place for header names and rules so propagation never drifts.
+when:
+- Adding a header-driven behaviour.
+- Making an outbound internal call.
+- Changing CORS `allowedHeaders`/`exposedHeaders`.
+org:
+- MUST: Use the service's single `HEADERS` constants module (lowercase): `x-correlation-id`, `idempotency-key`, `x-internal-api-key`, `x-internal-api-caller`, `client-id`, `bot-id`, `authorization`, `retry-after`, `deprecation`, `sunset`, `link`. Do not hard-code literals in handlers (one constants module per service; no duplicated copies).
+- MUST: Outbound internal calls send `x-correlation-id`, `x-internal-api-key`, `x-internal-api-caller: <this-service>` (CTX-02); calls to Entra-protected APIs add `Authorization: Bearer <token>`.
+- MUST: Read headers case-insensitively; take the first value of array headers; trim.
+- MUST: CORS `allowedHeaders` lists every custom request header and `exposedHeaders` includes `x-correlation-id`.
+- MUST: Correlation and idempotency rules come from their canonical skills; do not re-implement them here.
+- VERIFIED: Retired routes emit `Deprecation`, `Sunset`, `Link` (`deprecation-sunset-management`).
+impl:
+- Import `HEADERS` from the repo's single constants module (create it if missing).
+- Build outbound headers in one helper per integration.
+- Update CORS when adding a header.
+ex: ts | Outbound internal call headers
+const headers = {
+  "Content-Type": "application/json",
+  [HEADERS.INTERNAL_API_KEY]: apiKey,
+  [HEADERS.INTERNAL_API_CALLER]: "my-service",
+  ...(getCorrelationId() ? { [HEADERS.CORRELATION_ID]: getCorrelationId()! } : {}),
+};
+/ex
+fail:
+- Missing optional header -> proceed with documented default; missing required header -> 400 validation error.
+sec:
+- Never log `authorization` or `x-internal-api-key` values (log masked suffix only).
+test:
+- Header case-insensitivity; propagation on outbound; CORS preflight allows the header.
+anti:
+- `req.headers["X-Correlation-Id"]` literals scattered.
+- Forwarding all inbound headers downstream.
+- Trusting `x-forwarded-*` without configuration.
+check:
+- Constants used; propagation; CORS updated; no secret logging.
+
+@@ query-parameter-management | Query Parameter Management
+ev: E2
+cls: VERIFIED (API-05, API-06)
+std: API-05, API-06
+rel: request-validation, api-pagination, api-filtering-sorting, api-design-standards
+d: Use when defining, parsing or validating query parameters for lists, filters, sorting, paging and flags. Enforces schema validation with coercion, bounded values and tenant-identity consistency.
+scope: Query-string contract.
+app: HTTP APIs.
+purpose: Predictable, bounded, validated query inputs.
+when:
+- Adding list/filter endpoints.
+- Accepting booleans/numbers/dates in query.
+org:
+- MUST: Validate with the `query` segment schema; coerce types (`z.coerce.number()`), set defaults and server-side maximums.
+- MUST: Tenant identifiers in query (`clientId`, `tenantId`) must match the authenticated claim (see `api-request-structure`).
+- VERIFIED: Paging params are `page` and `limit` (reference service A) or `page` and `pageSize` (reference service B) - follow the target service (C-09).
+- GENERIC: Names `camelCase`; booleans accept `true|false` only.
+impl:
+- Schema with defaults and bounds; document in OpenAPI.
+- Reject unknown filter keys for sensitive collections.
+ex: ts | Query schema
+export const ListQuery = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  status: z.enum(["active", "inactive"]).optional(),
+});
+/ex
+fail:
+- Invalid query -> 400 validation error.
+sec:
+- Never build Mongo filters directly from raw query objects (operator injection).
+test:
+- Bounds, defaults, coercion failures.
+anti:
+- `parseInt(req.query.limit)` without bounds.
+- Passing `req.query` into `find()`.
+check:
+- Schema, bounds, whitelisting, docs.
+
+@@ api-pagination | API Pagination
+ev: E2
+cls: UNRESOLVED (C-09)
+std: API-06
+rel: api-filtering-sorting, query-parameter-management, query-optimization, api-response-structure, database-indexing
+d: Use when returning lists that can grow - choosing paging parameters, response pagination block, total counts, sort stability and limits. Follows the target service's pagination shape and flags the estate's three competing shapes.
+scope: List paging contract and implementation.
+app: HTTP APIs backed by Mongo.
+purpose: Bounded, deterministic list responses.
+when:
+- Any endpoint returning a collection.
+- Reviewing unbounded list endpoints.
+org:
+- MUST: Lists are bounded (server maximum) and deterministically ordered with a unique tiebreaker (`{ lastEventAt: -1, _id: 1 }`).
+- UNRESOLVED: Three shapes exist - `pagination:{ page, limit, totalItems, totalPages, hasNextPage }` in `data` (reference service A, inconsistently applied), `pagination:{ page, pageSize, totalItems, totalPages }` (reference service B), and `metadata.pagination:{ limit, offset, total, hasMore }` (shared package) (C-09). Use the shape already used by the target service; do not add a fourth; do not mix shapes within a service.
+- VERIFIED: Mongo implementation uses a single aggregation with `$facet` (`items` with `$sort/$skip/$limit`, `total` count) and `Math.ceil(total/pageSize)`.
+impl:
+- Add `page`/`limit` (or `pageSize`) to the query schema with max.
+- Sort including `_id`; create a supporting index (`database-indexing`).
+- Return the service's pagination block.
+ex: ts | $facet pagination (pattern)
+const [res] = await coll.aggregate([
+  { $match: filter },
+  { $facet: { items: [{ $sort: { lastEventAt: -1, _id: 1 } }, { $skip: (page - 1) * pageSize }, { $limit: pageSize }], total: [{ $count: "n" }] } },
+]).toArray();
+const totalItems = res.total[0]?.n ?? 0;
+return { items: res.items, pagination: { page, pageSize, totalItems, totalPages: Math.ceil(totalItems / pageSize) } };
+/ex
+fail:
+- Page beyond range returns an empty list with correct totals, not an error.
+test:
+- First/last/out-of-range page; stable ordering with ties; max limit enforced.
+anti:
+- Unbounded `find()`.
+- Skip-based paging on huge collections without noting the cost.
+- Sort without a tiebreaker.
+check:
+- Bounded, ordered, indexed, one shape.
+
+@@ api-filtering-sorting | API Filtering & Sorting
+ev: E2
+cls: GENERIC with VERIFIED sort stability
+std: API-06, API-05
+rel: api-pagination, query-parameter-management, query-optimization, database-indexing
+d: Use when adding filter and sort options to list endpoints. Whitelists fields and operators, maps them to indexed queries, and keeps ordering deterministic.
+scope: Filter/sort parameters and their query translation.
+app: HTTP APIs backed by Mongo.
+purpose: Safe, performant filtering without operator injection or unindexed scans.
+when:
+- Adding `status`, date range, text or metric filters.
+- Adding `sort` parameters.
+org:
+- MUST: Filter keys and sort fields are whitelisted by schema; queries are constructed from validated values, never raw query objects.
+- VERIFIED: Metric/dimension filters are normalized by dedicated helpers (`usage-alert-metric-filter`, `usage-alert-matching`) and unit-tested.
+- GENERIC: Sort syntax `sort=field` / `sort=-field` limited to indexed fields; date ranges `from`/`to` in ISO-8601 UTC.
+impl:
+- Define an enum of filterable/sortable fields mapped to document paths.
+- Build the filter object from validated values.
+- Ensure an index supports the default sort + common filters.
+ex: ts | Whitelisted sort map
+const SORTABLE = { createdAt: "createdAt", status: "status" } as const;
+const field = SORTABLE[q.sort as keyof typeof SORTABLE] ?? "createdAt";
+const sort = { [field]: q.order === "asc" ? 1 : -1, _id: 1 } as const;
+/ex
+fail:
+- Unknown sort/filter -> 400 validation error with the allowed values in `details`.
+test:
+- Each filter; combination; injection attempt (`{"$ne": null}`) rejected.
+anti:
+- `find(req.query)`.
+- Sorting on unindexed fields for large collections.
+check:
+- Whitelists; indexes; tests for injection.
+
+@@ response-serialization | Response Serialization
+ev: E2
+cls: VERIFIED (API-02) / GENERIC details
+std: API-02, OBS-03
+rel: response-dto-mapping, api-response-structure, sensitive-data-masking-in-logs
+d: Use when serializing responses - JSON dates, numbers, BigInt/ObjectId, circular structures, non-enumerable markers and content type. Keeps serialization explicit, safe and consistent.
+scope: How response objects become JSON.
+app: Node/Express JSON APIs.
+purpose: Predictable JSON output and no accidental leakage of internal markers or types.
+when:
+- Returning dates, ObjectIds, Maps/Sets or large numbers.
+- Adding internal markers to responses.
+org:
+- VERIFIED: Timestamps are ISO-8601 strings (`new Date().toISOString()`).
+- VERIFIED: Internal response markers are attached as **non-enumerable symbols** (`markFailOpen`) so JSON never carries them while the route layer can read them.
+- VERIFIED: Telemetry/audit serialization uses a circular-safe, truncating stringify (`safeStringify`, max 4096 chars) and mask before export.
+- GENERIC: Convert `ObjectId` to string, `Map/Set` to arrays in DTO mappers (not at `res.json`).
+impl:
+- Convert special types in mappers.
+- Use `res.json` (Express sets `application/json`); do not hand-write `JSON.stringify` responses.
+- For internal markers use `Object.defineProperty(obj, SYMBOL, { enumerable: false, value: true })`.
+ex: ts | Non-enumerable marker
+const FAIL_OPEN = Symbol.for("svc.failOpen");
+export const markFailOpen = <T extends object>(r: T): T => (Object.defineProperty(r, FAIL_OPEN, { value: true, enumerable: false }), r);
+/ex
+fail:
+- Serialization errors (circular) are programming errors -> `UNHANDLED_ERROR`; avoid by mapping.
+test:
+- JSON round trip has no marker; dates ISO; ObjectIds strings.
+anti:
+- Serializing Mongoose docs.
+- Using `toJSON` side effects.
+check:
+- Types converted; markers hidden; ISO dates.
+
+@@ swagger-openapi | Swagger / OpenAPI
+ev: E2
+cls: TECH / UNRESOLVED (C-18)
+std: API-07
+rel: api-documentation, api-contract-testing, api-versioning, api-design-standards
+d: Use when documenting an HTTP API with OpenAPI, serving Swagger UI, or validating the spec. Follows the target repo's mechanism (typed TS spec object or `openapi.json` + swagger-ui-express) and requires a spec test.
+scope: OpenAPI authoring, serving and validation.
+app: Express services.
+purpose: A living, tested API contract that clients can consume.
+when:
+- Adding or changing an endpoint.
+- Exposing docs.
+org:
+- MUST: Every public endpoint is in the spec with request schema, response envelope, error responses and security scheme.
+- VERIFIED: Reference service A: typed TS object `v2OpenApiSpec` + `getV2SwaggerHtml()` served at `/api/v2/swagger.json` and `/api/v2/docs`. Reference service B: `docs/openapi.json` + `swagger-ui-express` (`mountSwagger`), `/v2` paths derived from the base spec, plus a test (`swagger.test.ts`).
+- MUST: A test validates the spec loads and lists expected paths (B pattern).
+- UNRESOLVED: Docs are served unauthenticated in the reference (C-18). GENERIC: gate docs for non-public APIs.
+impl:
+- Add the path/operation next to the route change in the same PR.
+- Reference the shared envelope schemas (`SuccessEnvelope`, `ErrorEnvelope`).
+- Add or extend the spec test.
+ex: json | Operation fragment
+{ "post": { "operationId": "checkAndRecord", "security": [{ "bearerAuth": [] }],
+  "parameters": [{ "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }],
+  "responses": { "200": { "description": "OK" }, "400": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } } } }
+/ex
+fail:
+- Spec load failure must fail the build/test, not the runtime request path.
+sec:
+- Do not document internal-only endpoints in the public spec; do not expose docs for private APIs without auth.
+test:
+- Spec test; contract tests compare responses to the spec.
+anti:
+- Hand-edited spec drifting from code.
+- Docs without auth for internal APIs.
+check:
+- Spec updated; test passes; envelopes referenced.
+
+@@ api-versioning | API Versioning
+ev: E1
+cls: VERIFIED (API-08)
+std: API-08, API-01
+rel: deprecation-sunset-management, api-compatibility-review, breaking-change-review, api-design-standards
+d: Use when introducing a new API version, retiring an old one, or deciding whether a change is breaking. Applies path-segment versioning, one live version per surface, legacy-traffic measurement and recorded sunset dates.
+scope: Version strategy and lifecycle of API surfaces.
+app: HTTP APIs.
+purpose: Evolve contracts without stranding callers or accumulating unbounded dual-run versions.
+when:
+- A change would break existing callers.
+- Planning removal of a legacy surface.
+org:
+- MUST: Version is a path prefix (`/api/v2/...`); do not version through headers or query.
+- MUST: Before removing a legacy surface, measure traffic: log a warn and emit a telemetry trace on every legacy request (`legacyAccessMiddleware`) and require zero usage.
+- MUST: Record a sunset date before shipping the next version; retired routes answer 410 with deprecation headers (`deprecation-sunset-management`).
+- VERIFIED: Additive changes (new optional fields/endpoints) do not require a new version; removals/renames/semantic changes do.
+- VERIFIED: Product-prefixed surfaces (`/api/v2/<product>/...`) coexist with platform surfaces.
+impl:
+- Classify the change with `api-compatibility-review`.
+- If breaking, create the new version surface and add legacy-access logging to the old one.
+- Document the migration and sunset date in the README/ADR.
+ex: ts | Legacy access instrumentation (pattern)
+export function legacyAccessMiddleware(req: Request, _res: Response, next: NextFunction) {
+  logger.warn({ path: req.originalUrl, method: req.method }, "Legacy route accessed");
+  trackTrace("warn", "legacy_route_accessed", { path: req.originalUrl, method: req.method });
+  next();
+}
+/ex
+fail:
+- Calls to a retired version return 410 in the standard envelope with `useInstead`.
+test:
+- Both versions respond; legacy instrumentation fires; 410 after sunset.
+anti:
+- Unbounded v1/v2 dual-run (the reference's own worst outcome).
+- Breaking a version in place.
+check:
+- Breaking change -> new version; legacy measured; sunset recorded.
+
+@@ api-contract-testing | API Contract Testing
+ev: E2
+cls: VERIFIED (TEST-03), GENERIC tooling
+std: TEST-03, API-02, API-03, API-07
+rel: contract-testing, swagger-openapi, postman-functional-testing, api-testing, api-compatibility-review
+d: Use when verifying that an API's actual requests/responses match its documented contract - OpenAPI spec, envelopes, error codes, headers - and when guarding consumer/provider compatibility. This is the canonical contract-testing skill; other skills link here.
+scope: API contract verification (provider and consumer).
+app: HTTP APIs; Postman/Newman or the repo's test runner.
+purpose: Detects breaking changes before release.
+when:
+- Changing an endpoint, schema or error code.
+- Introducing a consumer of another service.
+org:
+- VERIFIED: Postman collections committed with the repo (`postman/*.json`, `docs/postman-enforcement-v2.json`, `docs/functional-tests/...`) with an environment file; Postman CLI is available on developer machines.
+- VERIFIED: Spec test loads the OpenAPI document (`swagger.test.ts`).
+- MUST: Contract tests assert envelope shape (`success`, `data`/`error`, `metadata.correlationId`), status code, catalog `code`/`numericCode`, and required headers.
+- GENERIC: Add schema validation of live responses against the OpenAPI schemas; run in CI. Consumer-driven (Pact-style) tests are not evidenced and need approval.
+impl:
+- Keep the spec and Postman collection updated in the same PR.
+- Add runner-level tests (supertest or HTTP mocks) for every documented status.
+- Run collection in CI against the test stack (`postman-functional-testing`).
+ex: ts | Envelope assertion (runner-neutral)
+expect(res.status).toBe(409);
+expect(res.body).toMatchObject({ success: false, error: { code: "IDEMPOTENCY_KEY_REUSED", numericCode: expect.stringMatching(/^1\d{7}$/) },
+  metadata: { correlationId: expect.any(String), timestamp: expect.any(String) } });
+expect(res.headers["x-correlation-id"]).toBeDefined();
+/ex
+fail:
+- Contract drift fails CI; do not weaken assertions to pass.
+test:
+- All documented statuses; error catalog codes; backwards compatibility with the previous spec.
+anti:
+- Contract tests that only check 200.
+- Spec not updated.
+check:
+- Spec + collection + tests updated; CI executes them.
+
+@@ api-compatibility-review | API Compatibility Review
+ev: E2
+cls: VERIFIED (API-08) + GENERIC checklist
+std: API-08, API-02, API-03, ERR-03
+rel: api-versioning, breaking-change-review, api-contract-testing, deprecation-sunset-management, code-review
+d: Use when reviewing a change to an API for backward compatibility - fields, enums, status codes, error codes, headers, pagination and auth. Produces a compatible / additive / breaking verdict with required version actions.
+scope: Reviewing API diffs.
+app: HTTP APIs.
+purpose: Prevent accidental breaking changes.
+when:
+- Any PR touching routes, schemas, DTOs, error catalog, envelope or auth.
+org:
+- MUST: Shipped error codes and numeric codes are never changed, reused or renumbered (ERR-03).
+- MUST: A breaking change requires a new version or a documented, approved migration with sunset (`api-versioning`).
+- VERIFIED: Wire-level renames are done at the boundary mapper while keeping queued/older data valid (`toWirePayload`).
+- GENERIC: Treat these as breaking: removed/renamed field, narrowed type, new required field/header, changed status for the same condition, changed envelope, stricter validation of previously accepted input, auth requirement added.
+impl:
+- Diff spec/schemas and error catalog.
+- Classify each change; record verdicts.
+- Require tests/version actions for breaking ones.
+ex: text | Review verdict format
+Change: field `plan` renamed to `planId` in response  -> BREAKING (rename) -> add `plan` alias for 1 version or bump version
+Change: new optional query `status`                    -> ADDITIVE
+Change: 404 -> 403 for foreign tenant                  -> BREAKING (status semantics)
+/ex
+fail:
+- Unclear classification -> treat as breaking and ask.
+test:
+- Run old contract tests against new code.
+anti:
+- Approving because the UI still works.
+- Changing codes "just once".
+check:
+- Verdict recorded; version/migration plan; tests.
+
+@@ api-rate-limiting | API Rate Limiting
+ev: E2
+cls: VERIFIED (API-09, A only)
+std: API-09, API-03, API-10
+rel: rate-limiting, middleware-request-pipeline, api-error-response, http-status-codes, bounded-concurrency
+d: Use when protecting HTTP endpoints from abuse or accidental overload - standard and strict tiers, 429 responses, headers and storage. Canonical for API-level limiting; dependency/service-level limiting is in `rate-limiting`.
+scope: Inbound request rate limits at the API tier.
+app: Express with `express-rate-limit`.
+purpose: Prevents self-DoS and amplification (for example a fan-out refresh route) while keeping the error contract.
+when:
+- Exposing publicly reachable, abusable or expensive endpoints.
+- Adding admin/fan-out operations.
+org:
+- MUST: Tiered limiters - global standard limiter (reference default 300/min via `RATE_LIMIT_STANDARD_PER_MIN`) and a strict limiter (default 5/min via `RATE_LIMIT_ADMIN_PER_MIN`) on expensive/fan-out routes; both env-configurable; `standardHeaders: true`, `legacyHeaders: false`.
+- MUST: The 429 response uses the standard error envelope with a **catalogued** code (reference defect: hand-built body with a non-catalog `RATE_LIMITED` code and the `UNHANDLED_ERROR` number - add a proper catalog entry).
+- MUST: Probe endpoints are excluded from limiting.
+- VERIFIED: Store is in-memory (per instance) and keyed on `req.ip`; multi-replica deployments need a shared store (Redis) wrapped fail-open, and keying on the authenticated principal behind a load balancer (generic; not implemented).
+- VERIFIED: Reference service B has no API rate limiting; its 429 means **quota exceeded** (`USAGE_LIMIT_EXCEEDED`) - different semantics, same envelope.
+impl:
+- Define limiter constants from env with defaults.
+- Mount standard limiter early; apply strict limiter per route.
+- Throw/send the catalogued 429 through the error path.
+ex: ts | Tiered limiters (reference)
+export const standardRateLimiter = rateLimit({ windowMs: 60_000, limit: Number(process.env.RATE_LIMIT_STANDARD_PER_MIN ?? 300), standardHeaders: true, legacyHeaders: false, handler: rejectWithCataloguedRateLimit });
+export const adminRateLimiter = rateLimit({ windowMs: 60_000, limit: Number(process.env.RATE_LIMIT_ADMIN_PER_MIN ?? 5), standardHeaders: true, legacyHeaders: false, handler: rejectWithCataloguedRateLimit });
+router.post("/configs/refresh", adminRateLimiter, validateAuthToken(), refreshAll);
+/ex
+fail:
+- Limiter store failure must fail open (do not block traffic) and be logged.
+sec:
+- Do not rely on IP alone behind proxies without configuring `trust proxy`.
+test:
+- Exceeding the limit returns catalogued 429 with `RateLimit-*` headers; probes unaffected.
+anti:
+- No limiter on fan-out routes.
+- Per-instance limits assumed to be global.
+- Hand-built 429 bodies.
+check:
+- Tiers; catalogued 429; env config; probes excluded.
+
+@@ deprecation-sunset-management | Deprecation & Sunset Management
+ev: E1
+cls: VERIFIED (API-08)
+std: API-08, API-04, API-10
+add: Retiring routes with 410 plus Deprecation/Sunset/Link headers and caller identification is implemented in the reference and is a distinct, reusable lifecycle practice not listed in the predefined inventory.
+rel: api-versioning, api-compatibility-review, request-header-management, breaking-change-review, structured-logging
+d: Use when retiring an endpoint or field - responding 410 Gone with Deprecation, Sunset and Link headers, logging every call with the replacement, and tracking remaining callers before removal.
+scope: Deprecating and retiring routes and contract elements.
+app: HTTP APIs.
+purpose: Safe retirement with caller discovery and clear migration pointers.
+when:
+- Replacing an endpoint.
+- Removing legacy routes after a version cut-over.
+org:
+- MUST: Retired routes answer **410** in the standard error envelope with `Deprecation: true`, `Sunset: <ISO date>`, `Link: <spec-url>; rel="deprecation"` and a `useInstead` list; each call is logged at `warn` with method, path, user-agent and replacement.
+- MUST: Maintain the list of supported public routes in one constant used in the response.
+- MUST: Do not retire before legacy-access measurements show no active callers (`api-versioning`).
+- VERIFIED: Sunset date is configured per route with a default.
+impl:
+- Create `rejectDeprecatedRoute({ route, sunset, useInstead })` once; mount on retired routes.
+- Update docs and OpenAPI (`deprecated: true`).
+- Monitor logs for callers; remove after zero hits for the agreed window.
+ex: ts | Retired route handler (pattern)
+res.setHeader("Deprecation", "true"); res.setHeader("Sunset", sunset);
+res.setHeader("Link", '</docs/openapi.json>; rel="deprecation"');
+res.status(410).json({ success: false, error: { code: "ROUTE_RETIRED", numericCode, message }, metadata: { correlationId, timestamp }, useInstead });
+/ex
+fail:
+- Requests to retired routes never reach business logic.
+test:
+- Headers, 410 envelope and log line asserted.
+anti:
+- Silent removal producing 404s.
+- Deprecating without a replacement pointer.
+check:
+- 410 + headers + logs + docs; date recorded.

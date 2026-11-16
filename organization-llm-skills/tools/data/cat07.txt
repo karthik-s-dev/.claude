@@ -1,0 +1,393 @@
+@@ mongodb-client | MongoDB Client
+ev: E1
+cls: TECH (mongoose vs native driver, C-11) + VERIFIED helpers
+std: DB-01, DB-03, CFG-01, OBS-03, ERR-09
+rel: database-connection-management, database-repository-pattern, database-indexing, query-optimization, redis-client, configuration-security
+d: Use when creating, configuring or using a MongoDB client - connection string/credentials from env, pool and timeout options, per-tenant databases, connection events, URI masking, closing on shutdown. Follows the target repo's driver (mongoose with shared schema models, or the native mongodb driver).
+scope: MongoDB client initialization and access.
+app: Node.js - `mongoose` 8 + `@inextlabs/schema-models`, or `mongodb` 6.
+purpose: Consistent, safe and observable database connectivity.
+when:
+- New repository or database access.
+- Connection errors, pool exhaustion, multi-tenant DB routing.
+org:
+- MUST: Connection string, user, password, DB name come from environment (`MONGO_DB_CONNECTION_STRING`, `MONGO_DB_USER`, `MONGO_DB_PASSWORD`, `MONGO_PLATFORM_ADMIN_DB_NAME`; usage services `USAGE_MONGO_URI`, `USAGE_DB_NAME`, `USAGE_MONGO_USER`, `USAGE_MONGO_PASSWORD`); never hard-coded; validated at startup (`required-environment-variables`).
+- MUST: Keep small local helpers: build the connection string so the DB name is inserted before any `?options`, `maskConnectionUri` for logs, and `formatMongoConnectionError(label, err, maskedUri)` to wrap connect failures.
+- MUST (mongoose profile): `mongoose.createConnection(uri, { dbName, user, pass, maxPoolSize: MONGO_MAX_POOL_SIZE (default 50), serverSelectionTimeoutMS: 5000, socketTimeoutMS: 45000, connectTimeoutMS: 10000, retryWrites: true, retryReads: true }).asPromise()`; cache connections per database in a `Map`; log `connected | error | disconnected` events; use shared models from `@inextlabs/schema-models`.
+- MUST (native profile): one `MongoClient` per repository module, lazy `connect()`, `client.db(name)`, typed `Collection<T>`, `ensure*Indexes()` at startup, `close()` exported and called on shutdown.
+- MUST: Multi-tenant data is addressed by a tenant-resolved database/collection (never by a client-supplied DB name); resolve through the owning config.
+- MUST: Treat driver errors via `exception-to-error-mapping`; infrastructure catalog entries (`MONGO_CONNECTION_STRING_UNDEFINED`, `DB_NAME_NOT_RESOLVED`, `CLIENT_CONNECTION_UNAVAILABLE`) for configuration/availability failures.
+- UNRESOLVED (C-11): Two drivers coexist; follow the target repo; do not introduce the other.
+impl:
+- Reuse the repo's connection module; add a repository (`database-repository-pattern`); add indexes (`database-indexing`).
+- Add the new env keys everywhere (`configuration-management`).
+ex: ts | Native driver repository client (reference pattern)
+let client: MongoClient | null = null; let db: Db | null = null;
+export async function initRepository(): Promise<void> {
+  if (client) return;
+  client = new MongoClient(config.mongo.uri);
+  try { await client.connect(); } catch (e) { throw formatMongoConnectionError("Repository", e as Error, maskConnectionUri(config.mongo.uri)); }
+  db = client.db(config.mongo.dbName);
+  await db.collection("items").createIndex({ productLine: 1, tenantId: 1, appId: 1, period: 1 }, { unique: true });
+}
+export async function closeRepository() { await client?.close(); client = null; db = null; }
+/ex
+fail:
+- Connect failure -> startup error with masked URI; runtime operation failure -> `technical-exception-handling`.
+sec:
+- Never log URIs unmasked; never interpolate user input into filter keys/operators.
+test:
+- Use in-memory doubles or the repo's Mongo test double (`database-testing`); test connection failure formatting.
+anti:
+- Creating a client per request.
+- Different pool settings hard-coded per file.
+- Passing raw query objects from the request.
+check:
+- Env-driven; masked; pool/timeouts; events; close; indexes.
+
+@@ redis-client | Redis Client
+ev: E1
+cls: VERIFIED (Azure TLS, ioredis) / TECH (profiles) / C-11
+std: DB-02, RES-01, CFG-01, CFG-05, DB-06
+rel: caching-strategy, cache-invalidation, distributed-locking, circuit-breaker, timeout-management, database-connection-management
+d: Use when creating or changing the ioredis client or key helpers - Azure Cache for Redis TLS, bounded command timeout, retry/offline-queue profile, key prefix and builders, TTL defaults, fail-open wrappers, closing on shutdown.
+scope: Redis connectivity and conventions.
+app: Node.js `ioredis` 5, Azure Cache for Redis.
+purpose: Fast, bounded and safe cache/counter access.
+when:
+- Adding Redis usage, keys or TTLs.
+- Redis latency/outage incidents.
+org:
+- MUST: Configure from env: host (`AZURE_CACHE_FOR_REDIS_HOST_NAME` or `REDIS_HOST_NAME` per target repo), `..._ACCESS_KEY`/`REDIS_ACCESS_KEY`, port (default 6380 for Azure TLS), `REDIS_KEY_PREFIX`, timeouts; **TLS** (`tls: { servername: host }` or `tls: {}`) whenever a password is set/non-local host; refuse a missing password for non-local hosts.
+- MUST: Always set `connectTimeout`, `commandTimeout`, `keepAlive` (10000) and a bounded `retryStrategy` (`Math.min(times*200, cap)`).
+- MUST: Choose the profile deliberately: **fail-fast** for request-path caches (reference: `commandTimeout:150`, `maxRetriesPerRequest:1`, `enableOfflineQueue:false`) and **resilient** for correctness-critical counters/idempotency (reference: `maxRetriesPerRequest:5`, `enableOfflineQueue:true`, `retryStrategy cap 3000`). Make the numbers configurable (reference hard-codes the fail-fast ones - defect).
+- MUST: Log client events (`connect` debug, `error` error with hint, `close` warn, `reconnecting` debug); never log the password.
+- MUST: Key naming `<domain>:<scope>:<id>` via a key-builder module (`redisKeys.ts`) - no inline string building in services; an optional service-wide `keyPrefix`.
+- MUST: Provide `get/set/del` JSON helpers and `safe*` fail-open variants for cache use (`caching-strategy`); `closeRedis()` on shutdown.
+- UNRESOLVED (C-19): Reading another service's keys through a second no-prefix client bypasses that service's API - do not copy.
+impl:
+- Reuse the module's `getRedis()`; add key builders; choose TTL via env.
+- Add tests with the Redis double (`in-memory-test-harness`).
+ex: ts | Client options (fail-fast profile, reference)
+client = new Redis({ host, port, password, tls: {}, connectTimeout: 15000, keepAlive: 10000,
+  commandTimeout: 150, maxRetriesPerRequest: 1, enableOfflineQueue: false,
+  retryStrategy: (times) => Math.min(times * 200, 2000) });
+client.on("error", (err) => logger.error(err, "Redis error"));
+/ex
+fail:
+- Cache reads fail open to the source of truth; counters/idempotency surface the error (503) per policy.
+sec:
+- TLS always for Azure; no passwords in logs; key space never includes secrets/PII.
+test:
+- Use the in-memory double; test timeout/breaker behaviour with forced rejection.
+anti:
+- Unbounded command timeout.
+- `KEYS *` in request paths.
+- Inline key strings.
+check:
+- Env-driven; TLS; timeouts; profile; key builders; close.
+
+@@ database-repository-pattern | Database Repository Pattern
+ev: E2
+cls: VERIFIED (DB-03, ARCH-02), naming UNRESOLVED
+std: DB-03, ARCH-02, DB-04, ARCH-04
+rel: mongodb-client, layered-architecture, database-indexing, dependency-injection, database-testing
+d: Use when reading or writing persistent data from application code. Datastore access belongs in one repository module per aggregate that owns collection access, mapping, index creation and close, and exposes intent-named functions.
+scope: Repository modules.
+app: TypeScript + Mongo.
+purpose: Isolate persistence from business logic and make it testable.
+when:
+- Adding a collection, query or write.
+- Spotting direct model/collection use in services.
+org:
+- MUST: One module per aggregate (`<aggregate>.repository.ts` in aliased repos; `<aggregate>-repository.ts` in flat repo - follow target) exposing intent-named functions (`fetchPendingUsageEvents`, `markUsageEventPublished`), plus `ensureXIndexes()` and `closeX()`.
+- MUST: Services never call `collection.*`/model methods directly (reference gap in the aliased repo; do not extend it).
+- MUST: Return domain types, not driver cursors; convert `ObjectId` at the boundary.
+- VERIFIED: Small inline retry for transient write conflicts (`MAX_RETRY_ATTEMPTS=3`, `RETRY_DELAY_MS=100`) in a repository; prefer one local retry helper (`retry-policy`).
+- VERIFIED: State machines on documents use explicit statuses (`pending|published|failed`) and attempt counters.
+impl:
+- Create the module, implement `init/ensureIndexes/close`, functions by intent, unit tests with a test double.
+ex: ts | Intent-named functions
+export async function markUsageEventFailed(id: ObjectId, error: string, attempts: number): Promise<void> {
+  const coll = await getCollection();
+  const status = attempts >= config.usageOutbox.maxAttempts ? "failed" : "pending";
+  await coll.updateOne({ _id: id }, { $set: { status, lastError: error, attempts } });
+}
+/ex
+fail:
+- Driver errors are translated by the caller's boundary (`exception-to-error-mapping`); repositories may throw typed `UsageReadError(context)` where the caller must distinguish read failure.
+test:
+- Repository tests with in-memory Mongo double: insert/duplicate-key/not-found/limit.
+anti:
+- Generic `BaseRepository<T>` hierarchy not used in the reference.
+- Business rules inside repositories.
+check:
+- One per aggregate; intent names; indexes; close; tests.
+
+@@ database-connection-management | Database Connection Management
+ev: E1
+cls: VERIFIED (DB-01, DB-02, ARCH-04)
+std: DB-01, DB-02, ARCH-03, ARCH-04, RES-05
+rel: mongodb-client, redis-client, graceful-shutdown, startup-dependency-validation, azure-service-connection-management
+d: Use when managing the lifecycle of datastore connections - lazy initialization, pooling, per-tenant caching, reconnect behaviour, readiness pings and orderly closing at shutdown.
+scope: Connection lifecycle.
+app: Node services.
+purpose: No leaked connections, predictable startup/shutdown.
+when:
+- Adding a datastore.
+- Seeing connection exhaustion or hung shutdown.
+org:
+- MUST: Each client is a lazy module singleton (`getX()`), has `init`/`close`, is verified at startup (`startup-dependency-validation`), probed by readiness (`health-endpoint-implementation`) and closed during graceful shutdown **after** HTTP drain (ARCH-03).
+- MUST: Pool sizes/timeouts configurable via env (`MONGO_MAX_POOL_SIZE`).
+- MUST: Per-tenant connection maps are bounded and closed on shutdown (reference caches indefinitely - note growth risk).
+- VERIFIED: Close helpers swallow-and-warn so one failed close does not prevent the rest (`.catch(err => logger.warn(...))`).
+impl:
+- Register `close*` in the shutdown list; test that all are called.
+ex: ts | Shutdown closes each client, warning on failure
+await closeRedis().catch((err) => logger.warn({ err: serializeError(err) }, "Redis close error"));
+await closeMongo().catch((err) => logger.warn({ err: serializeError(err) }, "Mongo close error"));
+/ex
+fail:
+- Close failures are logged, shutdown continues.
+test:
+- Shutdown calls every `close*`.
+anti:
+- Clients created inside handlers.
+- Missing close for new clients.
+check:
+- Singleton; env pool; probe; close registered.
+
+@@ database-transaction-management | Database Transaction Management
+ev: E0
+cls: GENERIC (no organizational evidence)
+std: DB-07, MSG-03
+rel: outbox-pattern, idempotency-management, mongodb-client, database-repository-pattern
+d: Use when an operation must update several documents atomically. The reference repositories use no multi-document transactions (single-document atomic operations, idempotent steps and an outbox instead). This is a generic baseline requiring approval before transactions are introduced.
+scope: Atomicity across documents.
+app: MongoDB 4.0+ replica sets / Cosmos DB API for Mongo.
+purpose: Prevent partial writes without inventing new patterns.
+when:
+- Asked to make a multi-document write atomic.
+org:
+- GENERIC: Prefer, in order: (1) a single-document atomic update (`$inc`, `findOneAndUpdate` with expected state) - as used for counters and idempotency claims; (2) idempotent steps + outbox (`outbox-pattern`); (3) multi-document transactions only after checking that the target Mongo/Cosmos tier supports them and obtaining approval.
+- VERIFIED: Atomic Redis operations (`SET NX`, Lua compare-and-swap/compare-and-delete) are the organization's atomic-claim idiom.
+- MUST: Do not wrap long-running I/O (HTTP, broker) inside a transaction.
+impl:
+- Document why (1) and (2) are insufficient before proposing (3).
+ex: text | Single-document claim (VERIFIED idiom)
+findOneAndUpdate({ _id, status: "pending" }, { $set: { status: "processing", owner } })
+/ex
+fail:
+- A transaction failure maps to `technical-exception-handling`; the whole unit is retried idempotently.
+test:
+- Failure injection between steps.
+anti:
+- Two-phase writes without idempotency.
+check:
+- Approval; alternatives considered.
+
+@@ database-indexing | Database Indexing
+ev: E2
+cls: VERIFIED (DB-04)
+std: DB-04, DB-03
+rel: database-repository-pattern, query-optimization, mongodb-client, api-pagination, audit-logging
+d: Use when adding a query, sort, uniqueness rule or retention need on a collection - define indexes in the repository's ensureIndexes (unique composite identity, polling index, TTL, sparse optional), and treat creation failure explicitly.
+scope: Index design and creation.
+app: MongoDB.
+purpose: Correct uniqueness and predictable query cost.
+when:
+- New collection or query.
+- Slow query/pagination.
+org:
+- MUST: Create indexes in the repository's `ensureXIndexes()`/init, invoked at startup; log failures at `warn` **and** surface them in readiness/monitoring - a service running unindexed is a degraded start (reference only warns; flag).
+- VERIFIED patterns: unique composite identity `{ productLine, tenantId, appId, period }`; outbox polling `{ status: 1, createdAt: 1 }`; TTL `{ createdAt: 1 }, { expireAfterSeconds: <env> }` (`USAGE_EVENT_OUTBOX_TTL_SECONDS`, `AUDIT_LOG_TTL_DAYS`); `sparse` for optional keys (`payload.idempotencyKey`); cleanup index `{ updatedAt: 1 }`.
+- MUST: Every list endpoint's default sort + common filter has a supporting index including `_id` tiebreaker.
+- MUST: Uniqueness that business logic depends on is enforced by a unique index, not by code.
+- GENERIC: Consumers' unique index for event dedupe is `{ productLine, clientId, usageEventId }`.
+impl:
+- Add `createIndex` calls with names; document each index's reason in a comment.
+ex: ts | Outbox indexes (reference)
+await coll.createIndex({ status: 1, createdAt: 1 });
+await coll.createIndex({ "payload.idempotencyKey": 1 }, { sparse: true });
+await coll.createIndex({ createdAt: 1 }, { expireAfterSeconds: config.usageOutbox.ttlSeconds });
+/ex
+fail:
+- Duplicate-key errors from unique indexes map to a conflict/idempotent-success decision, not a 500.
+test:
+- Duplicate insert rejected; TTL config applied; `explain` in review for new queries.
+anti:
+- Relying on app-level uniqueness.
+- Fire-and-forget index creation with no signal.
+check:
+- Index per access path; unique where required; TTL where retention applies.
+
+@@ database-migration | Database Migration
+ev: E3
+cls: VERIFIED pattern (guarded kit, partial) / GENERIC framework
+std: DB-07, CFG-06, API-08
+rel: feature-flag-management, mongodb-client, api-versioning, rollback-strategy, production-readiness-review
+d: Use when changing the shape of data that other services or versions read. Applies the guarded migration sequence (dual-write, backfill, verify, fallback-read, drop-at-zero) behind a feature flag. No migration framework exists.
+scope: Data shape migrations.
+app: MongoDB services.
+purpose: Cut over data models without outages.
+when:
+- Renaming/moving fields or collections used by multiple consumers.
+org:
+- VERIFIED (reference service A, partial): scripts in `src/scripts/migration/{backfill,verify,fallbackRead}.ts` (+ README), gated by `FEATURE_DUAL_READ` (default off), `legacyAccessMiddleware` to measure old-path usage. `dualWrite.ts` is referenced but missing and `verify.ts` uses `JSON.stringify` equality with a TODO - defects; do not copy them.
+- MUST: Sequence: dual-write -> backfill -> verify -> fallback-read -> drop only when legacy access is zero; each step reversible; flag default off.
+- MUST: Write consumers tolerate both shapes during the migration window; queued messages written in the old shape must still publish correctly (`toWirePayload` at last step).
+- GENERIC: Idempotent, re-runnable scripts with dry-run, batch size, and progress logging.
+impl:
+- Plan in an ADR; implement scripts with dry-run; measure legacy access; remove after zero.
+ex: text | Plan skeleton
+1 deploy dual-write (flag off) 2 enable flag 3 backfill 4 verify (deep equality) 5 switch reads with fallback 6 monitor legacy=0 7 remove old path
+/ex
+fail:
+- A failed verify stops the sequence.
+test:
+- Run scripts against a copy; verify counts and sample equality.
+anti:
+- One-shot irreversible updates.
+- Verifying with string equality of unordered JSON.
+check:
+- Reversible; flagged; verified; monitored.
+
+@@ query-optimization | Query Optimization
+ev: E2
+cls: VERIFIED patterns + GENERIC
+std: DB-04, DB-05, API-06
+rel: database-indexing, api-pagination, caching-strategy, performance-review, mongodb-client
+d: Use when a query is slow or hot - projection, indexes, aggregation with $facet, bounded concurrency, caching tiers - while preserving correctness.
+scope: Query performance.
+app: MongoDB/Redis.
+purpose: Predictable latency.
+when:
+- Performance review or slow endpoint.
+org:
+- VERIFIED: Single aggregation with `$facet` for page + count; stable sort with `_id`; Redis HASH counters and TTL keys for hot counters; L1/L2 pricing caches; bounded fan-out (`mapWithConcurrency`).
+- MUST: Measure before changing (explain/plan, timing logs); add the index first, then cache.
+- MUST: Select only needed fields; avoid per-item queries in loops (batch).
+- GENERIC: Prefer `lean()` in mongoose reads.
+impl:
+- Capture current plan; add index/projection; compare; add test or benchmark note.
+ex: ts | Bounded fan-out
+const results = await mapWithConcurrency(items, 5, async (i) => fetchOne(i));
+/ex
+fail:
+- Optimization must not change error semantics.
+test:
+- Result equality before/after.
+anti:
+- Caching before indexing.
+- N+1.
+check:
+- Evidence; index; projection.
+
+@@ caching-strategy | Caching Strategy
+ev: E1
+cls: VERIFIED (DB-05, RES-01)
+std: DB-05, DB-02, RES-01, ERR-09
+rel: redis-client, cache-invalidation, circuit-breaker, fallback-mechanism, distributed-locking, query-optimization
+d: Use when adding or changing caches - cache-aside/write-through with Redis, in-process LRU, tiered L1/L2, TTLs, stale windows, caching confirmed absence, and fail-open wrappers with a circuit breaker.
+scope: Cache design.
+app: Redis + in-process.
+purpose: Latency without sacrificing availability or correctness.
+when:
+- Adding a cache.
+- Dependency outage tolerance.
+org:
+- MUST: Source of truth is authoritative; cache failure never fails the request: wrap every request-path cache call in a fail-open helper (`withCacheFailOpen(op, key, fallback, fn)`): error -> record failure, `warn`, return fallback; **circuit breaker** opens after 5 consecutive failures for 15 s (reference constants - make configurable).
+- MUST: Deterministic keys from a key-builder; TTL from env (`REDIS_DEFAULT_TTL_IN_MINUTES` default 1440; subscription TTL, pricing TTL 3600 s).
+- VERIFIED: Tiers - L1 in-process `LruCache` (bounded entries) -> L2 Redis (`pricing:{llmKey}:{provider}:{region}`) -> Mongo; fresh-TTL plus **stale-max** window so a short upstream outage is survivable; cached `null` means **confirmed absent** and is distinct from "unavailable" (`ERR-09`).
+- VERIFIED: Write-through for configuration documents (write Mongo, then refresh cache).
+- MUST: Do not cache unavailability or errors as values.
+impl:
+- Choose read path (aside/through); write key builder; set TTL/stale; add invalidation (`cache-invalidation`); tests for hit/miss/failure.
+ex: ts | Fail-open wrapper (reference)
+async function withCacheFailOpen<T>(op: string, key: string, fallback: T, fn: () => Promise<T>): Promise<T> {
+  if (isBreakerOpen()) return fallback;
+  try { const r = await fn(); recordSuccess(); return r; }
+  catch (err) { recordFailure(); logger.warn({ op, key, err: serializeError(err) }, "Redis operation failed - falling open"); return fallback; }
+}
+/ex
+fail:
+- Cache blip degrades latency, never availability.
+sec:
+- Never cache secrets/PII beyond need; key space tenant-scoped.
+test:
+- Hit, miss, expired, stale-window serve, cache down, breaker open, null caching.
+anti:
+- Caching errors.
+- Unbounded in-process maps.
+- Cache as source of truth for counters without reconciliation.
+check:
+- Fail-open; breaker; TTL; keys; absence semantics; tests.
+
+@@ cache-invalidation | Cache Invalidation
+ev: E2
+cls: VERIFIED (DB-05, ARCH-07)
+std: DB-05, ARCH-07, MSG-05, CTX-02
+rel: caching-strategy, redis-client, event-driven-architecture, webhook-delivery, service-boundary-responsibility
+d: Use when cached data must be refreshed or dropped - explicit refresh/reset endpoints, subscription-changed notifications and webhooks, tenant-scoped invalidation, TTL fallback.
+scope: Invalidation triggers and mechanics.
+app: Services with Redis/in-process caches.
+purpose: Bound staleness predictably.
+when:
+- Data changes in the owning service.
+- Consumers hold caches of another service's data.
+org:
+- MUST: The owner exposes refresh/reset operations (`POST .../{id}/refresh`, rate-limited strict tier for fan-out) and publishes change notifications; consumers invalidate on receipt (`invalidateSubscriptionCache(tenantId?, appId?)` clears matching entries or all) and always keep a TTL as a safety net.
+- MUST: Change notification calls carry internal auth + correlation (`CTX-02`) and are delivered durably when loss causes business harm (`outbox-pattern`).
+- VERIFIED: Consumer cache keys encode source/product/tenant/app (`${source}:${productLine}:${tenantId}:${appId}`) so versions never mix.
+- MUST: Tenant-scoped invalidation must not clear other tenants.
+impl:
+- Add the trigger path, the invalidation function and a test for scope.
+ex: ts | Scoped invalidation (reference)
+export function invalidateSubscriptionCache(tenantId?: string, appId?: string): void {
+  if (!tenantId) { subscriptionCache.clear(); return; }
+  for (const key of subscriptionCache.keys()) { if (matchesTenant(key, tenantId, appId)) subscriptionCache.delete(key); }
+}
+/ex
+fail:
+- Failed notification -> outbox retry; staleness bounded by TTL.
+test:
+- Scope isolation; notification triggers invalidation; TTL expiry.
+anti:
+- Global flush per event.
+- No TTL.
+check:
+- Trigger, scope, durability, TTL.
+
+@@ distributed-locking | Distributed Locking
+ev: E2
+cls: VERIFIED (DB-06) with variation C-11
+std: DB-06, RES-01, ERR-02
+rel: redis-client, scheduled-job-reconciliation, idempotency-management, fail-open-fail-closed-policy, background-worker-processing
+d: Use when only one instance may perform an action - Redis SET NX EX locks with a per-acquisition ownership token, compare-and-delete release via Lua, contention behaviour and single-run job guards.
+scope: Cross-instance mutual exclusion.
+app: Redis.
+purpose: Safe exclusivity without releasing someone else's lock.
+when:
+- Preventing stampedes on refresh.
+- Running scheduled jobs on one replica.
+org:
+- MUST: Acquire with `SET lockKey token NX EX ttl` where `token` is a fresh UUID per acquisition; release only through a Lua compare-and-delete (`if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) end`); never release a lock you cannot prove you hold.
+- MUST: Contention policy is explicit: for cache/refresh locks **proceed unlocked** after the wait timeout rather than returning 500 (`LOCK_ACQUISITION_FAILED` reserved for cases that must not proceed).
+- VERIFIED (jobs): single-run guard `SET reconcile:lock <host:pid> EX <secs> NX` plus a per-day `done` marker; lock expires by TTL (acceptable only for idempotent jobs; prefer token+compare-delete).
+- MUST: TTL longer than the worst-case critical section; no lock around network calls without timeouts.
+impl:
+- Use `withLock(key, fn, { ttl, wait })` helper from the cache module.
+ex: ts | Token lock (reference)
+const token = randomUUID();
+const ok = await redis.set("lock:" + key, token, "EX", ttl, "NX");
+if (ok === "OK") { try { return await fn(); } finally { await redis.eval(RELEASE_LOCK_SCRIPT, 1, "lock:" + key, token); } }
+/ex
+fail:
+- Redis down: fall through unlocked (cache locks) or skip the run (jobs) - log `warn`.
+test:
+- Two contenders; expiry; release by non-owner no-op.
+anti:
+- `DEL lock:key` blindly.
+- Fixed token value.
+check:
+- Token; Lua release; policy; TTL.

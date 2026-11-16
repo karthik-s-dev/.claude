@@ -1,0 +1,527 @@
+@@ microservice-architecture-standards | Microservice Architecture Standards
+ev: E2
+cls: VERIFIED (ARCH-01..07), UNRESOLVED (layout naming C-17)
+std: ARCH-01, ARCH-02, ARCH-03, ARCH-05, ARCH-07, PKG-01
+rel: project-structure, layered-architecture, service-registration-lifecycle, middleware-request-pipeline, service-boundary-responsibility, internal-package-management
+d: Use when creating a new microservice, restructuring one, or reviewing its overall shape. Enforces the organization's Express/TypeScript service anatomy - shared-infrastructure zone, composition root, ordered bootstrap, approved internal packages, standard envelopes - instead of ad-hoc structure.
+scope: Whole-service structure and cross-cutting wiring for HTTP microservices.
+app: Node.js/TypeScript/Express services (reference stack); contract applies to any stack.
+purpose: Gives every service the same anatomy so engineers and AI assistants find logging, errors, correlation, config, health and API contracts in predictable places, and so cross-cutting concerns are implemented once. Prevents each service from inventing its own bootstrap, error format or logger.
+when:
+- Creating a new service or a new module/zone inside a service.
+- Adding a cross-cutting concern (logging, auth, correlation, health) to a service.
+- Reviewing a pull request that changes `server`/`app`/bootstrap files or adds a top-level folder.
+- Migrating a legacy surface (v1) to the standard surface (v2).
+org:
+- MUST: Provide exactly one composition root (mounts middleware and routers in order) and one bootstrap entry (validates config, configures the logger, connects dependencies, starts workers, listens, handles signals) - ARCH-01, ARCH-03.
+- MUST: Use the approved internal packages for logging (`@inextlabs/logger`), errors (`@inextlabs/platform-errors`) and Entra auth (`@inextlabs/azure-oauth`); report them if missing (PKG-01).
+- MUST: Keep shared, domain-agnostic infrastructure in one zone that imports no feature code (`general/` in the reference).
+- MUST: Mount the single error middleware last for each API surface (ARCH-05, ERR-06).
+- MUST: Expose probe endpoints and API docs per `health-endpoint-implementation` and `swagger-openapi`.
+- VERIFIED: Layering `routes -> controllers -> services -> repositories/integrations -> shared infra` (ARCH-02).
+- UNRESOLVED: Folder/file naming style differs between the reference repos (C-17) - follow the target repository's existing style.
+- UNRESOLVED: Health, route and envelope naming differences are listed in `conflicts-and-open-decisions` (C-06, C-14, C-15).
+impl:
+- Inspect the target: entry files, folder layout, existing `general`-style zone, dependency manifest, `.npmrc`, test runner.
+- Map the work onto the standard anatomy (see `project-structure`); extend the existing layout, do not add a parallel one.
+- Wire cross-cutting concerns through their canonical skills: config (`configuration-validation`), logger (`logger-initialization`), correlation (`correlation-id-management`), errors (`global-exception-handling`), health (`liveness-readiness-checks`).
+- Keep controllers thin and services framework-free (`layered-architecture`).
+- Put outbound HTTP in integration modules and datastore access in repositories.
+- Document any deviation you must keep in an ADR (`architecture-decision-records`).
+tech:
+- A: One bootstrap, one composition root, one shared-infra zone, ordered middleware, one error middleware, standard envelopes, health probes, graceful shutdown.
+- B: Express 4, TypeScript (`strict: true`, CommonJS, ES2020+), path aliases mirrored in the test runner and `tsc-alias` for build output, `dotenv`.
+- B: Reference zones: `general/` (infra), a versioned feature zone (`v2/`), optional `products/<name>/` mounted with a single line.
+ex: text | Canonical anatomy
+src/
+  server.ts            # bootstrap (order matters)
+  app.ts               # composition root
+  general/             # shared infra: logger, correlation, telemetry, cache, db, health, response/error helpers
+  <feature>/           # routes/ controllers/ services/ repositories/ integrations/ schemas/ utils/(errorCatalog, env.schema) docs/
+/ex
+fail:
+- Dependency or config failure at boot exits non-zero before listening.
+sec:
+- Authenticate every route except health probes; document intentional exceptions.
+test:
+- Boot test: the app imports without side effects and the middleware order matches the standard.
+anti:
+- Two bootstrap paths or two logger modules in one service.
+- Feature code imported into the shared zone.
+- Per-service reinvention of error envelope, correlation or logger wrapper.
+- Business logic inside route files or controllers.
+check:
+- One bootstrap and one composition root exist and follow the standard order.
+- Approved internal packages are used; none replaced by public packages.
+- Error middleware is last; probes exist; docs exist.
+- Deviations are recorded.
+
+@@ project-structure | Project Structure & Folder Organization
+ev: E2
+cls: VERIFIED (ARCH-01), UNRESOLVED (C-17)
+std: ARCH-01, ARCH-02
+rel: microservice-architecture-standards, layered-architecture, clean-architecture, service-registration-lifecycle
+d: Use when adding files, folders, modules or path aliases to a service, or scaffolding a service. Places code in the organization's zones (shared infra, feature zone, routes/controllers/services/repositories/integrations/schemas/utils/docs) and keeps tests and aliases consistent.
+scope: Folder and module organization, aliases, file placement and naming within a service.
+app: TypeScript services; layout concepts apply to any language.
+purpose: Ensures new code lands where reviewers and tools expect it, keeps the dependency direction one-way, and keeps build/test aliases in sync.
+when:
+- Creating any new source file or folder.
+- Introducing a new API version, product module or background worker.
+- Changing `tsconfig` paths or test-runner module mappers.
+org:
+- MUST: One-way dependency direction `routes -> controllers -> services -> {repositories, integrations} -> shared infra`; shared infra imports no feature code (ARCH-01/02).
+- MUST: Test-only exports are prefixed `__` (for example `__setRedisForTests`).
+- VERIFIED: Role-suffixed file names (`config.controller.ts`, `error.middleware.ts`, `subscription.repository.ts`) in the aliased repo; `kebab-case.ts` in the flat repo.
+- VERIFIED: `.env.example`, `Dockerfile`, pipeline YAMLs, `docs/` (ADRs, OpenAPI, Postman) live at repo root; scripts in `scripts/` or `src/scripts/`.
+- CONFIG: Path aliases (`@general/*`, `@servicesv2/*`) are optional, but when present they must be declared in `tsconfig.json`, mirrored in the test runner and resolved in the build (`tsc-alias`).
+- UNRESOLVED: Test location - separate `test/` tree (Jest repo) vs colocated `*.test.ts` (Vitest repo); follow the target (C-04).
+impl:
+- Read the target tree and alias config; list where each role already lives.
+- Place the new file by role; reuse the existing file naming style.
+- If you add an alias, update `tsconfig.json`, the test runner mapping and the build step in the same change.
+- Keep one module per aggregate for repositories and one per external dependency for integrations.
+- Co-locate feature schemas (`schemas/`) and error catalog (`utils/errorCatalog.ts`) with the feature zone.
+ex: text | Placement guide
+route definition         -> <feature>/routes/<resource>.routes.ts
+request parsing          -> <feature>/controllers/<resource>.controller.ts
+domain logic             -> <feature>/services/<name>.service.ts
+datastore access         -> <feature>/repositories/<aggregate>.repository.ts
+outbound HTTP            -> <feature>/integrations/<dependency>.ts
+request schemas          -> <feature>/schemas/<resource>.schema.ts
+error catalog / env      -> <feature>/utils/errorCatalog.ts, env.schema.ts
+logger, correlation, db  -> general/service|middlewares|utils
+/ex
+fail:
+- Alias mismatch between build and tests shows up as runtime "module not found"; fix all three config files together.
+test:
+- CI should run a type-check (`tsc --noEmit`) and the test suite so alias drift fails the build.
+anti:
+- Creating `utils/misc.ts` dumping grounds.
+- Importing `express` types into services.
+- A second copy of a shared helper inside a feature folder.
+- Changing aliases in `tsconfig` only.
+check:
+- File is in the correct role folder and named per the repo's convention.
+- No upward or circular import introduced.
+- Aliases consistent across `tsconfig`, test runner, build.
+
+@@ clean-architecture | Clean Architecture
+ev: E2
+cls: VERIFIED (ARCH-02), GENERIC for stricter ports/adapters
+std: ARCH-02, ARCH-04
+rel: layered-architecture, dependency-injection, solid-principles, design-patterns
+d: Use when deciding where business rules live relative to frameworks and datastores, or when a service's domain logic is entangled with Express, Mongoose or SDK types. Applies the organization's pragmatic clean-architecture interpretation without introducing new frameworks.
+scope: Dependency rule between domain logic, application services and infrastructure.
+app: Any service; examples in TypeScript.
+purpose: Keeps domain/business logic independent from transport and infrastructure so it can be tested in isolation and survive framework or datastore changes.
+when:
+- Writing or refactoring business rules (limits, pricing, entitlement decisions).
+- Reviewing code where services import `express`, SDK clients or ORM models directly.
+org:
+- VERIFIED: The organization applies a pragmatic layered form: pure functions/classes for rules (for example `plan-limits`, `ai-credits-calculator`, `threshold-dedup`), collaborators injected through constructors, infrastructure behind `get*`/repository modules (ARCH-02, ARCH-04).
+- MUST: Services contain no `Request`/`Response` types; transport objects are mapped to plain inputs in controllers (`request-dto-mapping`).
+- MUST: No new DI/clean-architecture framework (no `inversify`, `tsyringe`, hexagonal scaffolding) without approval (ARCH-04).
+- GENERIC: Define small interfaces (ports) for outbound dependencies when you need substitution in tests (for example `ConfigSubscriptionFetcher`); this is the only port style evidenced.
+impl:
+- Separate pure decision logic from I/O: compute decisions in pure functions; perform reads/writes in the caller.
+- Pass dependencies as constructor/function parameters; default them to the production implementation.
+- Keep mapping between transport DTOs, domain types and persistence documents in explicit mapper functions.
+- Verify the dependency direction: domain -> nothing; services -> domain + ports; infra -> ports.
+ex: ts | Injected fetcher with a production default (pattern from the reference)
+type Fetcher = (clientId: string, appId: string) => Promise<Subscription | null>;
+
+export class SubscriptionService {
+  constructor(
+    private readonly fetchSubscription: Fetcher = getSubscriptionFromRemote,
+    private readonly source: string = "v2"
+  ) {}
+  async resolve(clientId: string, appId: string) {
+    const sub = await this.fetchSubscription(clientId, appId); // null = confirmed absent; throws = unavailable
+    return sub ? toEntry(sub) : null;
+  }
+}
+/ex
+fail:
+- Domain functions throw typed catalog errors; infrastructure errors are translated at the boundary (`exception-to-error-mapping`).
+test:
+- Unit-test pure rules with no mocks; test services with a fake fetcher/repository.
+anti:
+- Services reading `process.env` directly.
+- ORM documents leaking into API responses.
+- Introducing an abstract "UseCase" hierarchy that no repo uses.
+check:
+- Business rules testable without Express/DB.
+- Collaborators injected; defaults wired at the composition root.
+- No new architecture framework added.
+
+@@ layered-architecture | Layered Architecture
+ev: E2
+cls: VERIFIED (ARCH-02)
+std: ARCH-02, ARCH-05, ERR-08
+rel: clean-architecture, project-structure, database-repository-pattern, external-api-client, request-dto-mapping
+d: Use when writing or reviewing routes, controllers, services, repositories or integration modules. Enforces thin controllers, framework-free services, repository-owned data access, integration-owned outbound HTTP, and the controller error idiom.
+scope: Responsibilities and allowed dependencies of each layer inside a service.
+app: Node/Express services; contract is language-neutral.
+purpose: Keeps responsibilities separate so behaviour is testable, error handling is uniform and datastores/HTTP clients can be swapped or mocked.
+when:
+- Adding an endpoint end-to-end.
+- Moving logic out of controllers or route files.
+- Reviewing for layer violations.
+org:
+- MUST: Routes only compose middleware (`correlation -> auth -> validate -> controller`) and map paths; no logic.
+- MUST: Controllers parse validated input, call exactly one service operation, respond via the standard success helper, and forward failures with `next(toAppError(err))` (or an `asyncHandler` wrapper) - never write error bodies (ERR-08).
+- MUST: Services contain domain logic and import no `express` types.
+- MUST: Repositories own all datastore access (queries, indexes, mapping, `close()`); integrations own all outbound HTTP.
+- VERIFIED: Gap - the aliased reference repo lets services call models directly in places; do not extend that; add a repository.
+impl:
+- Create the route with validation and auth middleware, then the controller, service, repository/integration in that order.
+- Map request -> service input in the controller; map result -> response DTO in the controller or a mapper.
+- Throw catalog errors from services; do not catch just to rethrow.
+- Add tests per layer: controller (mock service), service (mock repository), repository (test double).
+ex: ts | Controller idiom
+export async function getItem(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { itemId } = req.params;            // already validated by validate(schema, "params")
+    const item = await itemService.getItem(itemId);
+    sendSuccess(req, res, toItemResponse(item));
+  } catch (err) {
+    next(toAppError(err));                    // never res.status(500).json(...)
+  }
+}
+/ex
+fail:
+- Unknown errors are wrapped as `UNHANDLED_ERROR` by `toAppError`; business failures throw catalog errors.
+test:
+- Controllers: assert `sendSuccess` or `next` called with an `AppError` carrying the expected code.
+anti:
+- Controller calling two services plus a repository.
+- `res.json({ error })` in handlers.
+- Services depending on `Request`.
+- Repositories returning raw driver errors to controllers.
+check:
+- Each layer only depends downward.
+- Error idiom used in every controller.
+- Mapping is explicit.
+
+@@ solid-principles | SOLID Principles
+ev: E2
+cls: GENERIC principles applied through VERIFIED org patterns
+std: ARCH-02, ARCH-04, ARCH-06
+rel: dependency-injection, design-patterns, clean-architecture, solid-compliance-review
+d: Use when designing or reviewing classes and modules for single responsibility, extension without modification, substitutability, small interfaces and dependency inversion - expressed through the organization's actual patterns (strategy registries, injected collaborators, role-based modules).
+scope: Class/module design rules inside a service.
+app: TypeScript (classes and function modules); principles are language-neutral.
+purpose: Provides concrete, repo-grounded ways to apply SOLID so reviewers can check it consistently.
+when:
+- Adding a branch (`if/switch`) on a type/unit that will grow.
+- Writing a class with more than one reason to change.
+- Reviewing code for SOLID compliance (use with `solid-compliance-review`).
+org:
+- VERIFIED: **S** - modules per role (controller/service/repository/integration); catalog and env schema in their own files.
+- VERIFIED: **O** - new billing units/products are added by registering a strategy (`registerGlobal`, `registerProductOverride`), not by editing a switch (ARCH-06).
+- VERIFIED: **L** - strategies implement one interface (`canHandle`, `calculate`) and are interchangeable; fetcher functions share one type.
+- VERIFIED: **I** - narrow function types and small interfaces (`ConfigSubscriptionFetcher`, `ICostCalculatorStrategy`).
+- VERIFIED: **D** - collaborators passed to constructors with production defaults; no DI container (ARCH-04).
+- MUST: Do not add a DI container or abstract factory layers to satisfy SOLID; use the patterns above.
+impl:
+- For a growing conditional, introduce a strategy interface plus a registry resolved by key (product override, then global, then explicit "not found").
+- For a class with mixed concerns, split by role and inject the collaborator.
+- Keep interfaces to the methods the consumer calls.
+ex: ts | Open/closed via registry (pattern from the reference)
+interface Strategy { id: string; canHandle(unit: string): boolean; calculate(input: Input): Result }
+class Registry {
+  private globals = new Map<string, Strategy>();
+  registerGlobal(unit: string, s: Strategy) { this.globals.set(unit, s); return this; }
+  resolve(unit: string): Strategy | null { return this.globals.get(unit) ?? null; }  // explicit null, caller logs
+}
+/ex
+fail:
+- A missing strategy resolves to `null` and is logged; callers decide (skip vs throw) per the dependency's failure policy.
+test:
+- One test per strategy plus a registry resolution-order test.
+anti:
+- God services.
+- `switch` on product/unit repeated in many files.
+- Interface with unused methods.
+- Subclass overriding to throw "not supported".
+check:
+- One reason to change per module.
+- New variants added without editing existing branches.
+- Dependencies injected.
+
+@@ dependency-injection | Dependency Injection
+ev: E2
+cls: VERIFIED (ARCH-04), UNRESOLVED (test seam style C-04)
+std: ARCH-04
+rel: service-registration-lifecycle, mocking-test-doubles, clean-architecture, in-memory-test-harness
+d: Use when wiring collaborators into services, handlers, workers or clients, or when making code testable. Enforces manual constructor injection with production defaults and lazy module singletons with get/close and test overrides - no DI container.
+scope: How dependencies are provided, shared and replaced in tests.
+app: TypeScript/Node services.
+purpose: Makes collaborators explicit and replaceable without framework magic and keeps the same wiring style across services.
+when:
+- Creating a class or function that needs a client, repository or another service.
+- Making a module testable.
+- Reviewing global state and singletons.
+org:
+- MUST: Use manual constructor/function-parameter injection; compose objects in the composition root/bootstrap (ARCH-04).
+- MUST: Do not introduce a DI container library (`inversify`, `tsyringe`, Nest modules) without approval - none exists in the reference repos.
+- VERIFIED: Infrastructure clients are lazy module singletons exposing `getX()` and `closeX()`; they throw a clear error when required configuration is missing; `closeX()` is called on shutdown.
+- VERIFIED: Test seams are explicit and prefixed `__` (`__setRedisForTests`, `__setUsageDbForTests`, `__setPublishUsageEventForTests`, `__resetConfigServiceClientForTests`); production code paths must not depend on them.
+- UNRESOLVED: Reference repos differ (explicit `__set*ForTests` hooks vs test-runner module mocks); follow the target repo (C-04).
+impl:
+- Classes: `constructor(private readonly dep: Dep = defaultDep)`.
+- Clients: module-level `let client: X | null`; `getX()` creates on first use from config; `closeX()` closes and nulls.
+- Expose a `__set…ForTests` override only when module mocking is not used in the target repo.
+- Construct and connect everything in bootstrap; pass instances down.
+ex: ts | Lazy singleton with close and test override
+let client: Redis | null = null;
+let testOverride: Redis | null = null;
+export function __setRedisForTests(o: Redis | null) { testOverride = o; }
+export function getRedis(): Redis {
+  if (testOverride) return testOverride;
+  if (!client) client = new Redis(buildRedisOptions());   // throws a catalogued error if config missing
+  return client;
+}
+export async function closeRedis() { if (client) { await client.quit(); client = null; } }
+/ex
+fail:
+- Missing client configuration throws a catalogued infrastructure error (for example `REDIS_CONFIG_MISSING`), never `undefined` use.
+test:
+- Replace singletons through the override/mocking mechanism of the target repo; reset it after each test.
+anti:
+- Module-level `new Client()` at import time.
+- Hidden global state with no `close`.
+- Reading `process.env` deep in services.
+- Adding a container library.
+check:
+- Dependencies explicit; defaults wired; `close` implemented and called on shutdown.
+- Tests can substitute every external client.
+
+@@ service-registration-lifecycle | Service Registration & Lifecycle
+ev: E1
+cls: VERIFIED (ARCH-03), defects documented
+std: ARCH-03, RES-04, CFG-02, OBS-01
+rel: graceful-shutdown, fatal-error-process-policy, startup-dependency-validation, logger-initialization, configuration-validation, background-worker-processing
+d: Use when writing or changing a service's bootstrap, startup validation, dependency connection, worker start/stop, signal handling or shutdown. Enforces the organization's boot order (validate config, configure logger, crash handlers, telemetry, connect, workers, listen) and correct shutdown order.
+scope: Process lifecycle from first line to exit.
+app: Node/TypeScript services.
+purpose: Guarantees that misconfiguration stops the process early, logging is configured before any module logs, and shutdown drains requests and flushes logs without losing work.
+when:
+- Creating or editing `server.ts`/`index.ts`.
+- Adding a worker, client, or dependency that must connect at start and close at stop.
+- Diagnosing restart loops, dropped requests at deploy, or lost logs.
+org:
+- MUST: Order: load env -> validate config (before importing `app`) -> configure logger (before modules that log are imported) -> register fatal-error handlers -> init telemetry -> connect datastores -> start workers -> `listen` (ARCH-03).
+- MUST: Shutdown order: stop workers -> stop accepting connections and drain HTTP with a bounded timeout -> close dependencies -> flush/close logger -> exit. Both reference repos get this wrong (C-22); do not copy.
+- MUST: Every started worker/client has a matching stop/close registered for SIGTERM and SIGINT.
+- VERIFIED: Fire-and-forget index creation is logged on failure; treat failure as a degraded-start warning and see `database-indexing`.
+- VERIFIED: B-style services also run dependency reachability checks at start and exit(1) on failure (`startup-dependency-validation`).
+impl:
+- Import `dotenv` config first; call config validation, then `initLogger()`, then `require`/import the app.
+- Register `uncaughtException`/`unhandledRejection` handlers (`fatal-error-process-policy`).
+- Start dependencies; start workers only after dependencies are connected.
+- In the signal handler: set a `shuttingDown` flag, stop workers, `await new Promise(res => server.close(res))` with a timeout, close clients, `await closeLogger()`, `process.exit(0)`.
+ex: ts | Boot and shutdown skeleton
+import { config as loadEnv } from "dotenv"; loadEnv();
+import http from "http";
+import { validateEnv } from "./<feature>/utils/env.schema";
+import { initLogger } from "./general/service/logger.bootstrap";
+validateEnv();            // 1. fail fast, before importing app
+initLogger();             // 2. configure @inextlabs/logger before anything logs
+async function start() {
+  const { default: app } = await import("./app");   // 3. import app only now
+  initTelemetry(); await connectDatastores(); startWorkers();
+  const server = http.createServer(app).listen(PORT);
+  const shutdown = async (sig: string) => {
+    logger.info({ sig }, "Shutting down");
+    stopWorkers();
+    await new Promise<void>((r) => { const t = setTimeout(r, 10_000).unref(); server.close(() => { clearTimeout(t); r(); }); });
+    await closeDatastores(); await closeLogger(); process.exit(0);
+  };
+  process.on("SIGTERM", () => void shutdown("SIGTERM")); process.on("SIGINT", () => void shutdown("SIGINT"));
+}
+void start().catch((err) => { logger.error(err, "Startup error"); process.exit(1); });
+/ex
+fail:
+- Startup error -> log with `logger.error(err, msg)` and exit(1); shutdown errors are logged and do not block exit.
+sec:
+- Do not log configuration values at startup; log which keys are missing.
+test:
+- Test the order via mocks (config validated before app import) and that `close*` functions are invoked on shutdown.
+anti:
+- Importing `app` (and thus loggers) before `configureLogger`.
+- Closing dependencies before draining HTTP.
+- Starting workers before dependencies are connected.
+- Un-awaited `server.close()`.
+check:
+- Boot order matches; workers have stop; shutdown awaited; logger flushed.
+
+@@ middleware-request-pipeline | Middleware & Request Pipeline
+ev: E2
+cls: VERIFIED (ARCH-05)
+std: ARCH-05, CTX-01, SEC-05, API-09, ERR-06, MSG-05
+rel: correlation-id-management, request-validation, authentication, global-exception-handling, api-rate-limiting, cors-policy, webhook-signature-verification
+d: Use when adding, ordering or reviewing Express middleware - CORS, body parsing/raw body, rate limiting, correlation, authentication, internal-key and webhook checks, validation, error middleware. Fixes the organization's mandatory order.
+scope: Order and responsibilities of middleware on each API surface.
+app: Express (reference); pipeline order applies to any HTTP framework.
+purpose: A request must pass correlation -> auth -> validation before reaching a handler and every error must leave through one formatter; order mistakes silently remove those guarantees.
+when:
+- Adding a middleware or router.
+- Adding a webhook endpoint (raw body).
+- Debugging missing correlation IDs in error responses or unauthenticated routes.
+org:
+- MUST: Order: CORS (allow-list) -> body parser (capture raw bytes where signatures are verified) -> rate limiter -> correlation/request-context -> per-router token auth -> internal-key check (internal routers) -> signature check (webhook routers) -> `validate(schema, segment)` -> controller -> error middleware **last** per surface.
+- MUST: Correlation middleware runs before authentication and error handling so 401/403 and error envelopes carry the ID.
+- MUST: Probe endpoints (`/health*`) are mounted without auth and rate limiting and are not logged at `info` per request (OBS-04).
+- MUST: Static route paths are mounted before parameterized ones; internal routers before public ones in the same prefix.
+- VERIFIED: One error middleware per versioned surface (`/api/v2` then global).
+impl:
+- Find the app's composition root and the existing router mounts.
+- Insert new middleware at the correct position relative to the list above.
+- For signature verification set `express.json({ verify: (req, _res, buf) => { req.rawBody = Buffer.from(buf); } })`.
+- Add the error middleware only once; never `app.use` a second formatter.
+ex: ts | Composition root (condensed)
+app.use(cors(corsOptions));                               // allow-list, typed rejection
+app.use(express.json({ verify: (req: any, _r, buf) => { req.rawBody = Buffer.from(buf); } }));
+app.use(standardRateLimiter);
+app.get("/health/live", live); app.get("/health/ready", ready);   // before auth
+app.use("/api/v2/<feature>", correlationIdMiddleware, featureRoutes); // routes add validateAuthToken(), validate()
+app.use("/api/v2", errorMiddleware);                      // last
+/ex
+fail:
+- CORS rejection is a typed error mapped to a catalogued 403 (never a hand-built body).
+sec:
+- A route that bypasses auth must be listed and justified in the PR.
+test:
+- Supertest-style route tests assert 401 without token, correlation header present on errors, and 400 on invalid input.
+anti:
+- Auth before correlation.
+- Rate limiter after expensive middleware.
+- Multiple error handlers for one surface.
+- Parsing the body twice (breaks raw-body signatures).
+check:
+- Order verified; error middleware last; probes unauthenticated; raw body captured where needed.
+
+@@ service-boundary-responsibility | Service Boundary & Responsibility
+ev: E1
+cls: VERIFIED (ARCH-07), risk C-19
+std: ARCH-07, CTX-02, SEC-03, SEC-02
+rel: microservice-architecture-standards, service-to-service-authentication, event-driven-architecture, external-api-client, architecture-review
+d: Use when deciding which service owns data or behaviour, adding a cross-service call or event, or reviewing coupling between services. Applies the organization's ownership model and service-to-service contract.
+scope: Ownership, contracts and coupling between services.
+app: Any distributed system of the organization's services.
+purpose: Prevents shared-database/shared-cache coupling and unclear ownership, and keeps inter-service contracts explicit, authenticated and traceable.
+when:
+- Adding an endpoint that another service will call.
+- Calling another service or reading its data.
+- Splitting or merging services.
+org:
+- MUST: A service owns its data; others access it through its API or events, never its datastore or cache keys. The reference reference service A owns subscription/configuration data; reference service B consumes it over HTTP and a change webhook.
+- MUST: Internal calls carry `x-internal-api-key`, `x-internal-api-caller`, `x-correlation-id`; calls to Entra-protected APIs carry a Managed-Identity bearer (CTX-02, SEC-02).
+- MUST: Internal endpoints live in a separate namespace and are authenticated fail-closed (SEC-03).
+- UNRESOLVED: One reference service reads another's Redis keys without a prefix (C-19) - do not replicate; propose an API/event contract.
+- VERIFIED: Change propagation uses a subscription webhook plus cache invalidation, not polling the owner's database.
+impl:
+- Write down: owner, consumers, contract (path, headers, schema, error codes), failure policy (fail-open or closed), freshness (cache TTL/stale window).
+- Add an integration module in the consumer (`external-api-client`) and an internal route in the owner.
+- Add contract tests (`api-contract-testing`).
+ex: text | Boundary note to include in the PR/ADR
+Owner: service-a (subscriptions). Consumer: service-b (reads via GET /api/v2/internal/..., Managed Identity).
+Failure policy: unavailable => fail closed when blocking enabled (typed Unavailable error); absent (404) => null.
+Freshness: consumer cache TTL 30 s, stale-max window; owner pushes subscription-changed webhook.
+/ex
+fail:
+- Owner unavailable: consumer follows the documented policy (`fail-open-fail-closed-policy`).
+sec:
+- Never expose internal routes publicly; never share secrets across services.
+test:
+- Contract tests on both sides; consumer tests for absent vs unavailable.
+anti:
+- Reading another service's database/cache directly.
+- Sharing a database between services.
+- Undocumented implicit contracts (field names inferred from code).
+check:
+- Owner and contract documented; auth headers; failure policy; contract tests.
+
+@@ design-patterns | Design Patterns
+ev: E2
+cls: VERIFIED (ARCH-06)
+std: ARCH-06, MSG-03, DB-05
+rel: solid-principles, cost-calculation-strategy-registry, outbox-pattern, caching-strategy, clean-architecture
+d: Use when choosing a design pattern for new logic. Lists the patterns actually used in the organization's services (Strategy+Registry+Decorator, factory helpers, outbox, adapter/normalizer, LRU+tiered cache, lazy singleton) and when each applies, to avoid introducing foreign patterns.
+scope: Pattern selection within a service.
+app: TypeScript services.
+purpose: Keeps solutions consistent and prevents pattern sprawl.
+when:
+- A switch on type/unit/provider is growing.
+- Two representations must be reconciled (adapter).
+- Work must survive a crash (outbox).
+org:
+- VERIFIED: **Strategy + Registry** for variants resolved by key with product override then global fallback (`CostCalculatorRegistry`).
+- VERIFIED: **Decorator** for cross-cutting calculation rules (free tier, margin, minimum charge) wrapping a strategy.
+- VERIFIED: **Factory helpers** for typed errors (`appErr`, `throwXError`, `V2Errors.*`).
+- VERIFIED: **Adapter/normalizer** converting external payloads into internal entries (`config-subscription-normalizer`, `subscription-cache-entry`).
+- VERIFIED: **Outbox** for durable side effects (`outbox-pattern`); **tiered cache** (`caching-strategy`); **lazy singleton** clients (`dependency-injection`).
+- MUST: Prefer these before introducing a new pattern; any new framework-level pattern needs an ADR.
+impl:
+- Name the force (variant growth, representation mismatch, durability).
+- Pick the matching pattern from the list; implement in the existing layer.
+- Add tests for resolution order and fallbacks.
+ex: ts | Decorator over a strategy
+const strategy = withMinimumCharge(withMargin(withFreeTier(new LlmTokenStrategy(), freeTier), marginPct), minCharge);
+registry.registerProductOverride("<product>", "per_million_tokens", strategy);
+/ex
+fail:
+- Unresolved variant returns `null`; the caller logs and applies the documented default (not an exception) unless correctness requires it.
+test:
+- Table-driven tests per variant.
+anti:
+- Reflection/plugin frameworks.
+- Singletons holding mutable request state.
+- Abstract base classes for one implementation.
+check:
+- Pattern matches an evidenced one or has an ADR.
+
+@@ internal-package-management | Internal Package Management
+ev: E1
+cls: MANDATED (PKG-01)
+std: PKG-01
+add: Every service depends on `@inextlabs/*` packages from GitHub Packages; correct registry/token/version handling is required for builds, Docker and CI and is not covered by any predefined skill.
+rel: microservice-architecture-standards, docker-containerization, ci-cd-pipeline, dependency-review, structured-logging
+d: Use when adding, upgrading, pinning or auditing `@inextlabs/*` packages, editing `.npmrc`, Docker build auth, or when code is about to import a public library for a concern an internal package already covers (logging, errors, Entra auth, usage utilities).
+scope: Internal npm package selection, registry access, versioning and substitution rules.
+app: Node.js/TypeScript services using GitHub Packages.
+purpose: Ensures internal packages are used instead of public alternatives and that registry credentials are handled safely.
+when:
+- Adding a dependency for logging, error formatting, auth, usage utilities, shared models.
+- A build/CI/Docker install fails with 401/403 on `@inextlabs/*`.
+- Reviewing `package.json` changes.
+org:
+- MUST: Use `@inextlabs/logger` (logging), `@inextlabs/platform-errors` (`AppError`, `formatError`), `@inextlabs/azure-oauth` (`validateAuthToken`, `generateAuthToken`), `@inextlabs/schema-models` (shared Mongoose models). `@inextlabs/inflow-usage-utils` is usage-platform specific and is **not** part of this ecosystem: do not add it for generic concerns; implement small local helpers (error-code builder, header constants, URI masking) per the relevant skills.
+- MUST: `.npmrc` contains `@inextlabs:registry=https://npm.pkg.github.com/inextlabs/` and the token **only** as `${AuthToken}` (environment variable); no literal token ever committed.
+- MUST: Docker build takes `ARG AuthToken`, runs `npm ci`, then deletes `.npmrc` before the image is finalized.
+- MUST: If a needed internal package is not installed in the target, report it; do not substitute a public library.
+- CONFIG: Foundational packages (`logger`, `platform-errors`) are pinned to exact versions in the reference (`1.0.4`, `1.0.1`); others use `^`.
+- VERIFIED: A service's logger is `@inextlabs/logger`; no other logging library is introduced (C-02).
+impl:
+- Inspect `package.json`, lockfile, `.npmrc`, Dockerfile, pipeline for `AuthToken`.
+- Add or update the package with the repo's package manager; keep lockfile committed.
+- Read the package's `.d.ts`/README in `node_modules` before using its API.
+- Check internal packages for known defects (see `conflicts-and-open-decisions` C-05) before wrapping them.
+ex: text | .npmrc (token by reference only)
+@inextlabs:registry=https://npm.pkg.github.com/inextlabs/
+//npm.pkg.github.com/:_authToken=${AuthToken}
+/ex
+fail:
+- 401/403 on install: token missing/expired or package access not granted to the repo (see package Manage Actions access); fix access, do not vendor the code.
+sec:
+- Never print `.npmrc` contents or the token in logs; scrub from image layers.
+test:
+- CI installs with `AuthToken` from secrets and runs `tsc --noEmit` and tests.
+anti:
+- Public logger/error libraries replacing internal ones.
+- Vendoring copies of package code (`v2/platform.ts` copy in the reference is a documented defect, C-08).
+- Literal tokens in `.npmrc`.
+check:
+- Internal packages used for their concerns; `.npmrc` safe; Docker removes `.npmrc`; versions pinned per policy.

@@ -1,0 +1,345 @@
+@@ code-review | Code Review
+ev: E2
+cls: VERIFIED (OPS-03) + checklist derived from all standards
+std: OPS-03, PKG-01, ERR-02, OBS-01, SEC-01
+rel: coding-standards-review, security-review, architecture-review, solid-compliance-review, breaking-change-review, dependency-review, production-readiness-review
+d: Use when reviewing a pull request or diff in an organization repository. Evaluates changes against the organizational standards catalog - approved packages, logging, error catalog, envelopes, config, security, tests - and reports each finding with the standard ID, severity and fix.
+scope: Pull request review.
+app: All repos.
+purpose: Consistent enforcement of the organization's rulebook.
+when:
+- Any PR; self-review before commit.
+org:
+- VERIFIED: PRs target `devtest`/`staging`/`main` and are validated against Azure Boards via the org reusable workflow `validate-azure-boards-pr.yml`; CI runs `tsc --noEmit` and tests (GitHub) / UnitTest stage (Azure).
+- MUST: Review order: (1) correctness; (2) standards - PKG-01 packages (no `console`, no `pino/winston`, no public substitutes), ERR (catalog, `AppError`, envelope, no leaks), OBS (logger shape, masking, correlation), CFG (schema/.env.example), SEC (auth on every route, fail-closed, constant-time), API (validation, envelopes, headers), DB/MSG (repositories, indexes, outbox, IDs), RES (timeouts, policies), TEST; (3) maintainability.
+- MUST: Each finding lists `file:line`, standard ID, severity (blocker/major/minor/nit), and a concrete fix; deviations from standards in *new or modified* code are blockers unless an approved exception exists; pre-existing deviations are noted, not blocked.
+- MUST: Findings never quote secrets.
+- MUST: If standards conflict or are unresolved (C-xx), report the conflict instead of choosing.
+impl:
+- Read the diff and target conventions; run the checklist below; summarize verdict.
+ex: text | Finding format
+BLOCKER src/v2/controllers/x.ts:42 [ERR-02,API-03] Controller writes res.status(400).json({error}). Throw catalog VALIDATION_FAILED via validate() and let the error middleware respond.
+/ex
+fail:
+- Unreviewable diffs -> ask to split.
+sec:
+- Escalate secrets/auth bypass immediately.
+test:
+- Tests accompany behaviour changes.
+anti:
+- Style-only reviews.
+- Approving with unmet blockers.
+check:
+- Standards checklist applied; findings with IDs; verdict.
+
+@@ architecture-review | Architecture Review
+ev: E2
+cls: VERIFIED (ARCH-01..07)
+std: ARCH-01, ARCH-02, ARCH-03, ARCH-05, ARCH-07, MSG-03
+rel: microservice-architecture-standards, service-boundary-responsibility, layered-architecture, event-driven-architecture, architecture-decision-records
+d: Use when reviewing a design or large change for structure - service boundaries, layering, bootstrap and lifecycle, middleware order, data ownership, async flows, failure policies and ADR presence.
+scope: Design-level review.
+app: All services.
+purpose: Catch structural violations early.
+when:
+- New service/feature design; large refactor.
+org:
+- MUST check: ownership and contracts (ARCH-07), no cross-service datastore/cache access, layer rules (ARCH-02), bootstrap/shutdown order (ARCH-03), middleware order (ARCH-05), durable async (outbox), idempotency for retryable writes, dependency table with fail-open/closed policy, observability and health, ADR for deviations.
+- MUST: Record unresolved choices as open decisions (not rulings).
+impl:
+- Produce a review note: findings, risks, required ADRs.
+ex: text | Review note headings
+Context | Findings (ARCH-xx) | Risks | Required decisions/ADRs | Verdict
+/ex
+fail:
+- N/A.
+test:
+- Architecture tests where tooling exists.
+anti:
+- Approving diagrams without failure modes.
+check:
+- All ARCH items; ADRs.
+
+@@ security-review | Security Review
+ev: E2
+cls: VERIFIED (SEC-01..SEC-09)
+std: SEC-01, SEC-03, SEC-04, SEC-05, SEC-06, SEC-09, CFG-04
+rel: api-security, authentication, secrets-management, ssrf-protection, webhook-signature-verification, internal-api-key-authentication, cors-policy
+d: Use when reviewing code for security - authentication on every route, fail-closed behaviour, secret handling, constant-time comparisons, webhook/raw-body HMAC, SSRF, CORS, input validation, error leakage, logging of sensitive data, rate limits and relax flags.
+scope: Security review.
+app: All services.
+purpose: Find defects from the organization's known pattern list.
+when:
+- Security-relevant changes; periodic review.
+org:
+- MUST check list: routes without auth; internal routes missing key middleware; `if (!key) next()` outside local/dev; `timingSafeEqual` used; webhook secret boot guard present; raw body used; SSRF guard at registration and delivery; CORS allow-list (no `origin:true` + credentials); validation on all segments; errors without internals; masking for new fields; no secrets in repo/logs/Docker layers; relax flags (`SECURITY_RELAXED_FOR_DEVNDEMO`, `AUTH_FAIL_OPEN`) not honoured in production; rate limits on fan-out routes; docs exposure; tenant binding.
+- MUST: Known defects list in `conflicts-and-open-decisions` section F is the starting regression list.
+- MUST: Do not reproduce secrets found; report location and rotation need.
+impl:
+- Walk the checklist; add tests for each fixed issue.
+ex: text | Finding
+MAJOR src/routes/internal.ts:12 [SEC-03,CFG-04] Internal routes mounted without requireInternalApiKey.
+/ex
+fail:
+- Escalate criticals.
+sec:
+- n/a
+test:
+- Security tests added.
+anti:
+- Treating fail-open as acceptable "for now".
+check:
+- All checks; evidence.
+
+@@ performance-review | Performance Review
+ev: E2
+cls: VERIFIED patterns + GENERIC
+std: DB-04, DB-05, RES-02, RES-06, API-06
+rel: query-optimization, caching-strategy, bounded-concurrency, database-indexing, performance-testing
+d: Use when reviewing performance-sensitive changes - queries and indexes, N+1, unbounded lists, caching and fail-open, concurrency caps, timeouts, payload size, hot-path allocations, worker batch sizes.
+scope: Performance review.
+app: Services.
+purpose: Avoid regressions and unbounded behaviour.
+when:
+- Hot paths; list endpoints; workers.
+org:
+- MUST check: bounded queries/pagination; supporting indexes; no per-item queries in loops; cache with fail-open and TTL; bounded concurrency; timeouts; batch sizes env-configurable; no sync CPU-heavy work on the request path; response sizes.
+impl:
+- Request evidence (explain plan/timings).
+ex: text | Finding
+MAJOR src/v2/usages-query.ts:112 [DB-04] sort on unindexed field lastEventAt for large collection - add index.
+/ex
+fail:
+- N/A.
+test:
+- Benchmarks/regression tests.
+anti:
+- Premature optimization without evidence.
+check:
+- Evidence; indexes; bounds.
+
+@@ production-readiness-review | Production Readiness Review
+ev: E2
+cls: VERIFIED parts (health, config, pipeline) + GENERIC gaps
+std: OBS-04, CFG-02, CFG-04, OPS-02, RES-05, OBS-06
+rel: deployment-release-management, rollback-strategy, operational-runbooks, alerting-standards, graceful-shutdown, security-review
+d: Use before releasing a service or major change - config validation and fail-closed secrets, health probes, graceful shutdown, logging/masking, error catalog complete, idempotency and outbox, pipeline gates (secret scan, Sonar, Snyk, Trivy), immutable image tags, rollback and runbooks, alerts.
+scope: Release gate.
+app: All services.
+purpose: Verified readiness.
+when:
+- Before staging/production promotion.
+org:
+- MUST items: env schema + `.env.example` complete; required secrets present per environment; `/health/live`+`/ready`; shutdown order correct; fatal handlers; logger initialized first, masking configured; all errors catalogued, codes unique; auth on all routes; idempotency on retryable writes; outbox for critical side effects; indexes created; SHA-tagged image (no reliance on `latest`); prod pipeline stages green (SecretScan, SonarQubeScan, SnykScan, Build, TrivyScan, Push); rollback = redeploy previous tag; runbook and alerts (GENERIC - none in repos).
+- MUST: Record gaps (no deploy stage, no alerts) as launch risks needing approval.
+impl:
+- Fill the checklist in the PR/release note.
+ex: text | Checklist excerpt
+[ ] ready 503 on dependency failure  [ ] image tag = short SHA  [ ] rollback tag identified  [ ] runbook linked
+/ex
+fail:
+- Any unchecked mandatory item blocks release.
+test:
+- Smoke tests on staging.
+anti:
+- Releasing with `latest` tags.
+check:
+- All items.
+
+@@ clean-code-review | Clean Code Review
+ev: E2
+cls: GENERIC with repo conventions
+std: ARCH-02, ERR-08, OBS-02
+rel: coding-standards-review, refactoring, solid-compliance-review, code-review
+d: Use when reviewing readability and maintainability - naming, function size, duplication, dead code (imported-unused middleware, stale duplicate modules), comments explaining why (finding IDs), and error/logging idioms.
+scope: Readability review.
+app: TypeScript.
+purpose: Maintainable code consistent with the repos.
+when:
+- PR review.
+org:
+- VERIFIED conventions: comments cite finding IDs and rationale (`// SEC-02:`, `// DAT-01:`, `R-0xx`); intent-named functions; role-suffixed files; small modules; typed interfaces; `as const` catalogs.
+- MUST flag: dead/unused code (unused imports, middleware never invoked, `dualWrite.ts` referenced but missing), duplicate modules (two loggers), commented-out guards, `any` in new code, console usage, magic numbers that should be config.
+impl:
+- Request removal or tickets.
+ex: text | Finding
+MINOR src/v2/routes/config.routes.ts:7 requireRole/principalMiddleware imported but never used - remove or wire.
+/ex
+fail:
+- N/A.
+test:
+- n/a
+anti:
+- Bikeshedding.
+check:
+- Dead code; duplicates; naming.
+
+@@ refactoring | Refactoring
+ev: E2
+cls: GENERIC with org constraints
+std: ARCH-02, API-08, TEST-01
+rel: clean-code-review, technical-debt-assessment, breaking-change-review, unit-testing, solid-compliance-review
+d: Use when restructuring code without changing behaviour - move logic to the right layer, extract repositories/integrations, remove duplicate modules, replace ad-hoc errors with catalog errors - while keeping public contracts and shipped codes unchanged and tests green.
+scope: Behaviour-preserving change.
+app: All.
+purpose: Safe improvement.
+when:
+- Technical debt remediation.
+org:
+- MUST: Refactor only code you were asked to touch; no unrelated rewrites (Compliance Rule 10); preserve public API, error codes, message shapes; add characterization tests first where tests are missing.
+- MUST: Migrate legacy surfaces with the guarded pattern (`database-migration`, `api-versioning`), not in place.
+- VERIFIED targets: stale duplicate loggers, parallel request-id systems, hand-built 429/CORS bodies, direct model calls in services, vendored copies of shared package code.
+impl:
+- Test first; small steps; run tests after each.
+ex: text | Plan
+1 add characterization tests 2 extract repository 3 switch callers 4 delete old path
+/ex
+fail:
+- Revert on failing contract tests.
+test:
+- Before/after equality.
+anti:
+- Big-bang rewrites.
+check:
+- Contracts preserved; tests.
+
+@@ solid-compliance-review | SOLID Compliance Review
+ev: E2
+cls: derived from `solid-principles`
+std: ARCH-02, ARCH-04, ARCH-06
+rel: solid-principles, clean-code-review, design-patterns, dependency-injection
+d: Use when reviewing a change for SOLID violations using the organization's patterns as the benchmark - multi-responsibility classes, growing switches, base-class overrides that throw, fat interfaces, direct construction of collaborators.
+scope: SOLID review.
+app: TypeScript.
+purpose: Objective SOLID findings.
+when:
+- Review of classes/services.
+org:
+- MUST check: S (one reason to change; role-based modules), O (strategy registry instead of switches), L (substitutable strategies/fetchers), I (narrow function types), D (constructor injection with defaults; no container).
+- MUST: Findings propose the organization's pattern (registry, injected fetcher), not a new framework.
+impl:
+- Annotate each violation with the principle and fix.
+ex: text | Finding
+MAJOR src/pricing/calc.ts:30 [O] switch(billingUnit) - register a strategy (see cost-calculation-strategy-registry).
+/ex
+fail:
+- N/A.
+test:
+- Strategy tests.
+anti:
+- Demanding abstractions for single implementations.
+check:
+- Five principles.
+
+@@ coding-standards-review | Coding Standards Review
+ev: E2
+cls: VERIFIED conventions (TECH)
+std: ARCH-01, PKG-01, OBS-01, ERR-02, CFG-02
+rel: code-review, clean-code-review, project-structure, structured-logging, error-catalog-management
+d: Use when checking that code follows the repo's and organization's coding conventions - TypeScript strict mode, aliases, naming/layout, logger/error idioms, config access, `__` test exports, comment style, no console, no `process.env` in features.
+scope: Convention compliance.
+app: TypeScript/Node.
+purpose: Mechanical conformance.
+when:
+- PR review; onboarding.
+org:
+- MUST check: `strict: true` (aliased reference uses strict; flag `strict: false` in repos); CommonJS/ES2020 target unless repo differs; imports via aliases/relative per repo; file naming per repo; no `console.*`; `logger` Pino order; `AppError` catalog throws; config via schema; `__` prefix for test hooks; `as const` catalogs; no `any` without comment; no commented-out code; `.env.example` updated.
+- UNRESOLVED: No eslint/prettier configuration exists in the reference repos (E0) - do not claim lint rules; recommend adding with approval.
+impl:
+- Run `tsc --noEmit`; scan with grep for `console\.`, `process.env`, `new Error(`.
+ex: text | Greps
+grep -rn "console\." src | grep -v test ; grep -rn "process\.env" src/v2/services
+/ex
+fail:
+- N/A.
+test:
+- CI type-check.
+anti:
+- Inventing lint rules.
+check:
+- Items.
+
+@@ technical-debt-assessment | Technical Debt Assessment
+ev: E2
+cls: derived from governance findings
+std: ARCH-01, ERR-03, CFG-02, OPS-01, TEST-01
+rel: refactoring, dependency-review, architecture-review, production-readiness-review
+d: Use when listing and prioritizing debt - known reference debts (dual v1/v2 surfaces, duplicate loggers/modules, hard-coded breaker constants, missing coverage thresholds, `latest` tags, unused dependencies, vendored shared-lib copies, legacy error-code schemes, inert authorization middleware).
+scope: Debt inventory.
+app: All.
+purpose: Visible, prioritized debt.
+when:
+- Planning; after reviews.
+org:
+- MUST: Classify each item: impact (security/reliability/maintainability), effort, standard ID, owner, and removal condition; never mix debt with standards (debt = deviation from a standard).
+- VERIFIED debt list (starting point): see `governance/conflicts-and-open-decisions.md` sections A and F.
+impl:
+- Produce a table and ticket references.
+ex: text | Row
+Legacy error codes 50xxx (C-01) | reliability/contract | M | ERR-03 | owner | remove after consumers migrate
+/ex
+fail:
+- N/A.
+test:
+- n/a
+anti:
+- Unowned lists.
+check:
+- Table; priorities.
+
+@@ dependency-review | Dependency Review
+ev: E2
+cls: VERIFIED (PKG-01, OPS-02)
+std: PKG-01, OPS-02, CFG-07
+rel: internal-package-management, pipeline-security-scanning, security-review, technical-debt-assessment
+d: Use when reviewing added or upgraded dependencies - internal-package substitution check, version pinning policy, unused packages (`winston`), lockfile and package manager consistency, license/security scans (Snyk), supply-chain.
+scope: Dependency changes.
+app: npm projects.
+purpose: Safe, minimal dependency set.
+when:
+- `package.json` changes.
+org:
+- MUST: Reject public packages duplicating an internal package's concern (logging, errors, Entra auth, usage utils); `@inextlabs/logger` and `platform-errors` stay pinned; lockfile updated and one package manager (flag `packageManager: pnpm` with `package-lock.json`, C-21); remove unused dependencies (reference: `winston`, unused `supertest`/`express-jwt` checks); Snyk scan passes; no postinstall scripts from unknown packages.
+- MUST: New dependencies need justification and approval for categories noted elsewhere (DI containers, loggers, retry/breaker libs, validation libs, metrics libs).
+impl:
+- Run `npm ls`, audit, search usages.
+ex: text | Finding
+MAJOR package.json [PKG-01] "winston" added; logging must use @inextlabs/logger.
+/ex
+fail:
+- N/A.
+test:
+- CI install + scans.
+anti:
+- Floating major versions for foundational packages.
+check:
+- Substitution; pinning; unused; scans.
+
+@@ breaking-change-review | Breaking Change Review
+ev: E2
+cls: VERIFIED (API-08) + GENERIC
+std: API-08, ERR-03, MSG-04, DB-07
+rel: api-compatibility-review, api-versioning, message-versioning, database-migration, deprecation-sunset-management
+d: Use when a change might break consumers - APIs, error codes, envelopes, headers, message payloads, queue job shapes, DB shapes, env variables, shared package exports. Decides compatibility, required version bump/migration and communication.
+scope: Breaking change detection across contracts.
+app: All.
+purpose: No surprise breaks.
+when:
+- Any contract change.
+org:
+- MUST: Treat as breaking: removed/renamed field/endpoint/env var/package export, changed error code or status for the same condition, changed envelope, new required header/field, tightened validation, message type/enum change (`USAGE_ALERT` -> `USAGE-ALERT`), DB shape change read by others.
+- MUST: Breaking requires version/migration/sunset plan (`api-versioning`, `database-migration`) and a CHANGELOG/README note; shared packages follow semver with deprecation before removal (GENERIC).
+- MUST: Consumers' lockfiles are updated in their own PRs to `devtest`.
+impl:
+- Complete a table: change, contract, consumers, verdict, action.
+ex: text | Row
+env AZURE_CACHE_FOR_REDIS_HOST_NAME -> REDIS_HOST_NAME | BREAKING | keep alias with warn for 2 releases
+/ex
+fail:
+- Unknown consumers -> assume breaking.
+test:
+- Old-contract tests.
+anti:
+- Renaming in place.
+check:
+- Table; plan; communication.

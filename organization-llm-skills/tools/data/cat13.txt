@@ -1,0 +1,450 @@
+@@ unit-testing | Unit Testing
+ev: E1
+cls: TECH (Jest vs Vitest, C-04) + VERIFIED conventions
+std: TEST-01, TEST-02, TEST-04
+rel: mocking-test-doubles, test-coverage-standards, in-memory-test-harness, integration-testing, test-data-management
+d: Use when writing or reviewing unit tests - use the target repo's runner (Jest + ts-jest in `test/`, or Vitest with colocated *.test.ts), mock @inextlabs packages with the shared pattern, test controllers with mock req/res/next and services with fakes.
+scope: Unit tests.
+app: Jest 29 + ts-jest, Vitest 4.
+purpose: Fast, deterministic tests that enforce standards.
+when:
+- Any code change.
+org:
+- MUST: Use the repo's existing runner/layout; never add a second runner (C-04). Jest repo: `roots:["<rootDir>/test"]`, `test/setup.ts` env stubs, `test/helpers/request.ts` (`mockReq/mockRes/mockNext`), `test/mocks/{logger,platform-errors}.ts`, `*.spec.ts` per controller; moduleNameMapper mirrors tsconfig aliases. Vitest repo: `src/**/*.test.ts`, `globals:true`, `testTimeout:30_000` (suites use `vi.resetModules()`), config in `vitest.config.mts`.
+- MUST: Mock the logger package: `jest.mock("@inextlabs/logger", () => ({ __esModule: true, default: mockLogger, serializeError: jest.fn(...), createMasker: jest.fn(() => (v) => v) }))` (or the Vitest equivalent).
+- MUST: Test environments set env via a setup file; never real secrets.
+- VERIFIED: Names `describe("<unit>")`/`it("<behaviour>")`; pure rule modules have table-driven tests (`plan-limits.test.ts`, `threshold-dedup.test.ts`).
+- MUST: Each catalog error touched has an assertion on `code`, `numericCode`, status.
+impl:
+- Arrange (stub env/clients), Act, Assert (envelope/logger/error); reset module state in `afterEach`.
+ex: ts | Controller unit test (Jest style, reference pattern)
+it("forwards a catalogued error", async () => {
+  mockService.getItem.mockRejectedValue(new AppError(404, "CLIENT_NOT_FOUND", "10200017", "Client not found"));
+  const next = mockNext();
+  await getItem(mockReq({ params: { itemId: "x" } }), mockRes(), next);
+  expect(next).toHaveBeenCalledWith(expect.objectContaining({ code: "CLIENT_NOT_FOUND", statusCode: 404 }));
+});
+/ex
+fail:
+- Tests assert failure paths as first-class.
+test:
+- Positive, negative, edge, failure; no network/DB.
+anti:
+- Real network/DB in unit tests.
+- Snapshot-everything.
+- Shared mutable fixtures.
+check:
+- Runner matches; logger mocked; catalog assertions; resets.
+
+@@ integration-testing | Integration Testing
+ev: E2
+cls: VERIFIED (TEST-01, TEST-02) Vitest repo
+std: TEST-01, TEST-02, DB-01
+rel: unit-testing, in-memory-test-harness, database-testing, message-processing-testing, end-to-end-testing
+d: Use when testing several modules together - route plus middleware plus handler with in-memory Redis/Mongo/Service Bus doubles, or supertest against the app. Uses *.integration.test.ts with its own runner config.
+scope: Multi-module tests without real infrastructure.
+app: Vitest `vitest.config.integration.mts` (`src/**/*.integration.test.ts`); Jest + supertest where used.
+purpose: Verify wiring, middleware order, idempotency and error envelopes.
+when:
+- Changing routes, auth, validation, idempotency, publish flows.
+org:
+- VERIFIED: `npm run test:integration`; `*.integration.test.ts` files use in-memory doubles via `__set*ForTests`.
+- MUST: Assert end-to-end envelope and headers (`x-correlation-id`), idempotency behaviours and outbox/event capture.
+- GENERIC: `supertest` is installed in the Jest repo but unused - use it for route tests (auth/validation/middleware order).
+impl:
+- Install doubles in `beforeEach`; build the app/router; call; assert.
+ex: ts | Route test (supertest, GENERIC use)
+const res = await request(app).post("/api/v2/items").set("x-correlation-id", "test-123456").send({});
+expect(res.status).toBe(400); expect(res.body.error.code).toBe("VALIDATION_FAILED"); expect(res.headers["x-correlation-id"]).toBe("test-123456");
+/ex
+fail:
+- Failure injection via doubles.
+test:
+- Auth, validation, success, duplicates, dependency down.
+anti:
+- Hitting real Azure.
+check:
+- Doubles; envelope; config.
+
+@@ end-to-end-testing | End-to-End Testing
+ev: E2
+cls: VERIFIED (TEST-01, TEST-03)
+std: TEST-01, TEST-03, TEST-04
+rel: integration-testing, postman-functional-testing, api-testing, performance-testing, test-data-management
+d: Use when verifying behaviour against a running stack - e2e Vitest suite (`e2e/*.e2e.test.ts`, `vitest.config.e2e.mts`), step runner scripts, seeded data and Postman collections.
+scope: Full-stack functional tests.
+app: Vitest e2e, Postman/Newman, ts-node scripts.
+purpose: Confidence before release.
+when:
+- Release candidates; cross-service flows.
+org:
+- VERIFIED: `npm run test:e2e`, a step-runner script (`test:<feature>-steps`), seed scripts, a showcase script and a local stub of the upstream service, documented in `docs/functional-tests/**` and a local-dev-stack guide.
+- MUST: E2E uses a dedicated test environment/database and seeded synthetic data; never production data.
+- MUST: E2E runs are separate from unit CI gates (not required for every PR).
+impl:
+- Add scenario to the walkthrough doc and the runner; seed idempotently.
+ex: text | Step runner
+npm run test:<feature>-steps -- --all --pause
+/ex
+fail:
+- Scenario failures report step and payload ids, not secrets.
+test:
+- Happy path + dependency stub failure.
+anti:
+- Shared mutable test tenants.
+check:
+- Env isolated; seeds; docs.
+
+@@ api-testing | API Testing
+ev: E2
+cls: VERIFIED (TEST-03)
+std: TEST-03, API-02, API-03
+rel: api-contract-testing, postman-functional-testing, integration-testing, security-testing
+d: Use when verifying API behaviour - per-endpoint tests for success, validation, auth, errors, headers, pagination and idempotency using supertest/Postman, asserting the standard envelopes.
+scope: API-level tests.
+app: Jest/Vitest + supertest, Postman.
+purpose: Contract-correct endpoints.
+when:
+- Adding/changing endpoints.
+org:
+- VERIFIED: per-controller spec files (one per endpoint in the Jest repo, ~21), v2 route validation tests (`v2-routes.validation.test.ts`), health tests (`health.test.ts`), Postman collections.
+- MUST: Each endpoint tested for: 200/201 envelope, 400 validation, 401/403 auth (class-specific), 404, domain errors, correlation header, idempotency (write endpoints), pagination bounds.
+impl:
+- Use `request-helpers`/supertest; share fixtures.
+ex: ts | Envelope assertions
+expect(res.body).toMatchObject({ success: true, data: expect.anything(), metadata: { correlationId: expect.any(String) } });
+/ex
+fail:
+- Error envelope asserted as strictly as success.
+test:
+- Matrix per endpoint.
+anti:
+- Only happy path.
+check:
+- Matrix covered.
+
+@@ contract-testing | Contract Testing (Non-API Contracts)
+ev: E2
+cls: VERIFIED (TEST-03, MSG-04); canonical API contract skill is `api-contract-testing`
+std: TEST-03, MSG-04, API-07
+rel: api-contract-testing, message-structure-contracts, swagger-openapi, postman-functional-testing
+d: Use when testing contracts that are not HTTP API responses - message/job payload schemas, webhook payloads, shared package interfaces. For API contracts use api-contract-testing; this skill only adds message and webhook contract guidance.
+scope: Message, webhook and package contracts.
+app: JSON Schema, TypeScript types.
+purpose: Producers and consumers stay compatible.
+when:
+- Changing a payload or shared package API.
+org:
+- MUST: HTTP/API contract tests live in `api-contract-testing` (do not duplicate).
+- VERIFIED: Payload contract artifacts: JSON Schema files under `docs/`, typed interfaces, dedicated mapper tests (wire conversion, event-ID derivation) and enum-constant tests.
+- MUST: Test old-shape payloads still processed (outbox rows written before a change).
+impl:
+- Validate sample payloads against the schema; test mappers and enum constants.
+ex: ts | Wire mapper
+expect(toWirePayload({ ...event, tenantId: "C1" })).toMatchObject({ clientId: "C1" });
+expect(toWirePayload(event)).not.toHaveProperty("tenantId");
+/ex
+fail:
+- Contract drift fails CI.
+test:
+- Round trip; old shapes.
+anti:
+- Untested wire renames.
+check:
+- Schemas; mappers; enums.
+
+@@ database-testing | Database Testing
+ev: E2
+cls: VERIFIED (TEST-02)
+std: TEST-02, DB-03, DB-04
+rel: in-memory-test-harness, mongodb-client, database-repository-pattern, database-indexing, integration-testing
+d: Use when testing repositories and queries - the in-memory Mongo and Redis doubles (`memory-mongo`, `memory-redis`), index/uniqueness behaviour, duplicate-key paths, and overrides via `__setUsageDbForTests`/`__setRedisForTests`.
+scope: Datastore tests.
+app: Vitest/Jest with in-memory doubles.
+purpose: Repository correctness without real databases.
+when:
+- Adding repositories/queries.
+org:
+- VERIFIED: `src/test-harness/mocks/memory-mongo.ts`, `memory-redis.ts` (Redis-compatible client incl. SET NX EX and EVAL-style CAS used by idempotency); injected through test hooks; reconciler tests with injected deps (`reconcile.test.ts`).
+- MUST: Cover unique-key duplicates, TTL semantics (where doubled), empty results and driver-error paths.
+- GENERIC: Real-database tests only in a dedicated, disposable environment.
+impl:
+- Install doubles in setup; reset between tests.
+ex: ts | Override hook
+__setUsageDbForTests(createMemoryMongo());   // afterEach: __setUsageDbForTests(null)
+/ex
+fail:
+- Inject failures via doubles.
+test:
+- Unique, not found, partial updates.
+anti:
+- Shared DB across tests.
+check:
+- Doubles; reset; failure cases.
+
+@@ message-processing-testing | Message Processing Testing
+ev: E2
+cls: VERIFIED (TEST-02)
+std: TEST-02, MSG-01, MSG-02, MSG-03
+rel: in-memory-test-harness, outbox-pattern, azure-service-bus-client, message-consumer, integration-testing
+d: Use when testing producers, outbox workers, queue consumers and webhook delivery - in-memory Service Bus double capturing messages (messageId/applicationProperties), outbox state transitions, delete-after-success, malformed and duplicate messages.
+scope: Messaging tests.
+app: Vitest with `memory-service-bus`.
+purpose: Verify delivery semantics.
+when:
+- Changing publish/consume code.
+org:
+- VERIFIED: `memory-service-bus.ts`, `__setPublishUsageEventForTests`, tests `service-bus-publisher.not-configured.test.ts`, `notification-worker.test.ts`, `threshold-notification-job-queue.test.ts`, `usage-alert-publisher.service.test.ts`, `webhook` tests.
+- MUST: Assert `messageId` determinism across retries, applicationProperties, outbox `pending -> published|failed`, attempt limits, not-configured behaviour (error vs no-op), malformed message deletion.
+impl:
+- Use fake timers for workers.
+ex: ts | Assertions
+expect(captured[0]).toMatchObject({ messageId: "idem:req-1:llmInputTokens", applicationProperties: { correlationId: "c-1" } });
+/ex
+fail:
+- Failure injection: sender throws.
+test:
+- Retry/max/duplicate.
+anti:
+- Real brokers in unit CI.
+check:
+- IDs; states; malformed.
+
+@@ mocking-test-doubles | Mocking & Test Doubles
+ev: E1
+cls: VERIFIED (TEST-02)
+std: TEST-02, ARCH-04, OBS-01
+rel: dependency-injection, in-memory-test-harness, unit-testing, structured-logging, integration-testing
+d: Use when replacing dependencies in tests - mock @inextlabs/logger and @inextlabs/platform-errors with the shared manual mocks, stub env in setup, override clients via __set*ForTests, in-memory doubles, mocked axios; reset after each test.
+scope: Test double conventions.
+app: Jest/Vitest.
+purpose: Consistent, safe isolation.
+when:
+- Writing tests touching infra/packages.
+org:
+- MUST (logger): mock default export with `error/warn/info/debug` fns, `serializeError`, `createMasker`; do not import the real logger in unit tests.
+- VERIFIED (errors): `test/mocks/platform-errors.ts` manual mock where `AppError` is needed in isolation; otherwise use the real class.
+- VERIFIED (clients): `__setRedisClientForTests`, `__setRedisForTests`, `__setUsageDbForTests`, `__setPublishUsageEventForTests`, `__resetConfigServiceClientForTests`.
+- MUST: Restore overrides in `afterEach`; no leaking module state; `vi.resetModules()` where config is read at import.
+- GENERIC: Prefer fakes/in-memory doubles over deep mocks for stateful stores.
+impl:
+- Create mocks under `test/mocks` (or colocated); import in tests.
+ex: ts | Logger mock (reference)
+const mockLogger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+jest.mock("@inextlabs/logger", () => ({ __esModule: true, default: mockLogger, serializeError: jest.fn((e: any) => ({ name: e.name, message: e.message })), createMasker: jest.fn(() => (v: any) => v) }));
+/ex
+fail:
+- N/A.
+test:
+- Verify mocks restore.
+anti:
+- Mocking the unit under test.
+- Global mocks leaking.
+check:
+- Logger mocked; seams; resets.
+
+@@ test-data-management | Test Data Management
+ev: E2
+cls: VERIFIED (TEST-01, TEST-03) partial
+std: TEST-01, TEST-03, SEC-06
+rel: end-to-end-testing, database-testing, postman-functional-testing, unit-testing
+d: Use when creating fixtures, seeds and test environment values - synthetic data, seed scripts, Postman environment files, env stubs - without secrets or real customer data.
+scope: Test data.
+app: Tests, scripts.
+purpose: Reproducible, safe data.
+when:
+- Adding fixtures/seeds.
+org:
+- VERIFIED: `test/setup.ts` env stubs (`mongodb://localhost:27017`, `test` credentials), seed scripts and a synthetic Postman environment file.
+- MUST: Data is synthetic; ids clearly fake (`TEST-CLIENT`, `bot-test-1`); no real emails/keys; seeds idempotent and re-runnable.
+- MUST: Reset state between tests.
+impl:
+- Factory functions for entities; seeds with upsert.
+ex: ts | Factory
+export const makeSubscription = (o: Partial<Sub> = {}): Sub => ({ clientId: "TEST-CLIENT", status: "active", entitlements: { conversations: 20 }, ...o });
+/ex
+fail:
+- N/A.
+test:
+- Seeds idempotent.
+anti:
+- Production dumps.
+check:
+- Synthetic; idempotent.
+
+@@ performance-testing | Performance Testing
+ev: E0
+cls: GENERIC (closest evidence: NFR review CSV and v2-nfr.test.ts)
+std: TEST-05, RES-02
+rel: load-testing, performance-review, test-coverage-standards, metrics-collection
+d: Use when verifying latency and throughput characteristics. The reference has NFR assertions (`v2-nfr.test.ts`) and an NFR review sheet but no performance tooling; generic baseline.
+scope: Performance verification.
+app: Node.
+purpose: Detect regressions.
+when:
+- Hot paths, SLO changes.
+org:
+- VERIFIED: `src/v2-nfr.test.ts` and `docs/usage-enforcement-nfr-review.csv` capture NFR expectations (timeouts, fail-open behaviours).
+- GENERIC: Micro-benchmarks for pure functions; timing budgets in tests with generous thresholds; profile with `--prof`; compare p95 before/after.
+- MUST: Approval before introducing a perf tool (k6/autocannon) into repos.
+impl:
+- Define budget; measure on representative data.
+ex: text | Budget (GENERIC)
+check-and-record p95 < 150 ms at 200 rps with Redis healthy
+/ex
+fail:
+- N/A.
+test:
+- Repeatable.
+anti:
+- One-off timings.
+check:
+- Budget; method.
+
+@@ load-testing | Load Testing
+ev: E0
+cls: GENERIC
+std: TEST-05, API-09
+rel: performance-testing, api-rate-limiting, end-to-end-testing, production-readiness-review
+d: Use when verifying behaviour under concurrent load or overload - ramp, soak, spike against a test environment. No load tests exist in the reference repositories; generic baseline requiring approval.
+scope: Load tests.
+app: Test environments.
+purpose: Know limits before production.
+when:
+- Before launch of high-traffic endpoints.
+org:
+- GENERIC: Test only dedicated environments; seeded synthetic tenants; verify rate limits, timeouts, outbox draining, Redis fail-open, shutdown under load; record results in the runbook.
+- MUST: Approval for tools and environments; never run against production.
+impl:
+- Plan scenarios and success criteria.
+ex: text | Scenarios
+ramp 0->N rps | spike x5 | soak 1h | dependency kill (Redis)
+/ex
+fail:
+- N/A.
+test:
+- As above.
+anti:
+- Load testing shared envs without notice.
+check:
+- Env; approval; criteria.
+
+@@ security-testing | Security Testing
+ev: E2
+cls: VERIFIED (partial) + GENERIC
+std: SEC-01, SEC-03, OPS-02, INT-03
+rel: api-security, pipeline-security-scanning, authentication, security-review, ssrf-protection
+d: Use when testing security properties - auth required on every route, wrong/expired tokens, internal key outcomes, fail-closed config, SSRF denials, webhook signatures, no secrets in logs - plus pipeline scans (secret scan, SCA, container scan).
+scope: Security tests and scans.
+app: Unit/integration tests + pipeline.
+purpose: Prove controls work.
+when:
+- Auth/security code changes.
+org:
+- VERIFIED: tests exist for internal API auth (`internal-api-auth.test.ts`), client binding (`auth.client-binding.test.ts`), callback URL validation (`callback-url-validation.test.ts`), deprecated route; pipelines run TruffleHog, SonarQube, Snyk, Trivy in prod.
+- MUST: Table test asserting every route returns 401 (or 403) without credentials; fail-closed config tests; SSRF matrix; signature tamper tests; log-capture test for secrets.
+- GENERIC: Add dependency audit (`npm audit`) to CI.
+impl:
+- Add security tests next to the feature; keep scan stages gating the push.
+ex: ts | Route auth table
+for (const [method, path] of PROTECTED) it(method + " " + path + " requires auth", async () => { expect((await request(app)[method](path)).status).toBe(401); });
+/ex
+fail:
+- Security test failure blocks merge.
+test:
+- As above.
+anti:
+- Only testing the happy path.
+check:
+- Routes; fail-closed; SSRF; logs; scans.
+
+@@ test-coverage-standards | Test Coverage Standards
+ev: E3
+cls: PARTIAL (coverage reported, no threshold) / GENERIC target
+std: TEST-01, TEST-04
+rel: unit-testing, ci-cd-pipeline, code-review, technical-debt-assessment
+d: Use when setting or checking coverage expectations. The reference publishes JUnit and Cobertura reports but enforces no threshold (and runs with --passWithNoTests); this skill states the evidenced reporting and a provisional threshold recommendation.
+scope: Coverage policy.
+app: Jest (`--coverage`, cobertura) / Vitest.
+purpose: Make coverage a gate, not a number.
+when:
+- Setting CI gates.
+org:
+- VERIFIED: Jest reporters `default` + `jest-junit` (test-results/junit.xml); coverage reporters `text`, `cobertura`, `html`; Azure pipeline publishes results and the test stage gates the build (config repo); GitHub CI runs `tsc --noEmit` + tests (enforcement repo).
+- GENERIC (provisional, needs approval): threshold e.g. 80% lines for new/changed code via `coverageThreshold` (Jest) / `coverage.thresholds` (Vitest); remove `--passWithNoTests` from gates.
+- MUST: Standards-critical code (catalog, envelope, auth, idempotency) requires explicit tests regardless of percentage.
+impl:
+- Add threshold config; fail CI under it.
+ex: ts | Jest threshold (GENERIC)
+coverageThreshold: { global: { lines: 80, functions: 80, branches: 70 } }
+/ex
+fail:
+- Under threshold fails the test stage.
+test:
+- N/A.
+anti:
+- Coverage-padding tests.
+check:
+- Reports published; gate; critical areas.
+
+@@ in-memory-test-harness | In-Memory Test Harness
+ev: E2
+cls: VERIFIED (TEST-02) single repo
+std: TEST-02, ARCH-04
+add: Reusable in-memory Redis, Mongo and Service Bus doubles with documented test hooks and a step runner are the enforcement repo's main testing asset.
+rel: mocking-test-doubles, database-testing, message-processing-testing, integration-testing, dependency-injection
+d: Use when tests need Redis/Mongo/Service Bus behaviour without infrastructure - build or reuse in-memory doubles implementing the used subset (SET NX EX, GET, EVAL CAS, HASH counters; collection find/insert/update; sender capture) and install them through the production modules' test hooks.
+scope: Doubles and hooks.
+app: Vitest/Jest.
+purpose: Realistic, fast tests of stateful behaviour.
+when:
+- Testing idempotency, counters, outbox, publish flows.
+org:
+- VERIFIED: `test-harness/mocks/{memory-redis,memory-mongo,memory-service-bus}`, a harness README listing the hooks (`__setRedisForTests`, `__setPublishUsageEventForTests`, `__setUsageDbForTests`) and a step runner for stepwise inspection.
+- MUST: Production code exposes hooks prefixed `__` only for tests; hooks accept `null` to restore; doubles implement only methods used and fail loudly on unsupported commands.
+- MUST: Doubles live under a `test-harness` folder with a README.
+impl:
+- Add the double method when a new command is used; add a test for the double itself where non-trivial.
+ex: ts | Install and restore
+beforeEach(() => { __setRedisForTests(new MemoryRedis()); __setPublishUsageEventForTests(async (p) => { captured.push(p); }); });
+afterEach(() => { __setRedisForTests(null); __setPublishUsageEventForTests(null); });
+/ex
+fail:
+- Unsupported command throws `Error("MemoryRedis: unsupported command X")`.
+test:
+- Self-tests for NX/TTL/CAS.
+anti:
+- Doubles that silently accept anything.
+check:
+- Hooks; README; self-tests.
+
+@@ postman-functional-testing | Postman Functional Testing
+ev: E2
+cls: VERIFIED (TEST-03)
+std: TEST-03, API-07
+add: Committed Postman collections with environment files plus a step-runner walkthrough are the repos' functional-test practice; Postman CLI is installed on developer machines.
+rel: api-contract-testing, end-to-end-testing, api-testing, test-data-management, swagger-openapi
+d: Use when creating or running functional API tests as Postman collections - collection and environment files in the repo, synthetic data, variables for URLs/tokens (no secrets), pre-request token handling, CLI execution and CI.
+scope: Postman collections.
+app: Postman, Postman CLI.
+purpose: Executable API documentation and regression checks.
+when:
+- Adding endpoints; cross-service flows.
+org:
+- VERIFIED: `postman/*.postman_collection.json` or `docs/*postman*.json` collections, a synthetic environment file and `docs/functional-tests/**` setup/walkthrough guides.
+- MUST: Collections reference `{{baseUrl}}`, `{{correlationId}}`, `{{internalApiKey}}` variables; environments hold placeholders only; tokens obtained at run time.
+- MUST: Tests assert the standard envelope, status and catalog `code`.
+- GENERIC: Run with the Postman CLI in a pipeline stage against the test stack (not currently wired).
+impl:
+- Export updated collection with the PR; document the run in `TEST-SETUP.md`.
+ex: js | Postman test script
+pm.test("envelope", () => { const b = pm.response.json(); pm.expect(b.success).to.eql(true); pm.expect(b.metadata.correlationId).to.be.a("string"); });
+/ex
+fail:
+- Failed assertion fails the run.
+test:
+- Positive/negative per request.
+anti:
+- Real secrets in environment files.
+check:
+- Variables; assertions; docs.

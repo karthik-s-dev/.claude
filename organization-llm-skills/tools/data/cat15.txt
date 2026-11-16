@@ -1,0 +1,455 @@
+@@ readme-documentation | README Documentation
+ev: E2
+cls: VERIFIED (DOC-01)
+std: DOC-01, CFG-01, OPS-01
+rel: technical-documentation, developer-onboarding-documentation, deployment-documentation, configuration-management
+d: Use when writing or updating a service README - purpose, architecture/flow, project structure, prerequisites, install, environment variable table by group, run/test commands, API endpoint table, dependencies on other services, and links to docs.
+scope: Repository README.
+app: All repos.
+purpose: Entry point that is accurate and current.
+when:
+- New service; any change to config, endpoints, scripts.
+org:
+- VERIFIED structure (reference READMEs): title + one-line purpose; architecture notes and breaking changes; how it works (flow diagram in text); dependent service endpoints table; request/response samples; project structure tree; prerequisites (Node >=, Mongo, Redis); install/run/test commands; env variable documentation mirrored from `.env.example`.
+- MUST: README env table matches `.env.example` and the schema; commands match `package.json` scripts; sample payloads use synthetic ids; no secrets.
+- MUST: Update README in the same PR as behaviour changes.
+impl:
+- Use the headings above; link to `docs/`.
+ex: text | Skeleton
+# <service>  | Purpose | Architecture | Endpoints | Configuration (by group) | Run | Test | Deploy | Troubleshooting | Related docs
+/ex
+fail:
+- Outdated README = defect.
+test:
+- Review checklist.
+anti:
+- Copying `.env` values.
+check:
+- Sections; sync with env/commands.
+
+@@ technical-documentation | Technical Documentation
+ev: E2
+cls: VERIFIED (DOC-01)
+std: DOC-01, API-07
+rel: architecture-documentation, api-documentation, readme-documentation, operational-runbooks
+d: Use when documenting how something works for engineers - design notes, flows, data models, field semantics, test walkthroughs - in the repo's docs/ folder with accurate references to code.
+scope: docs/ content.
+app: All.
+purpose: Durable engineering knowledge.
+when:
+- Non-trivial behaviour or flows.
+org:
+- VERIFIED docs: `docs/ai-credits.md`, `docs/LOCAL-DEV-STACK.md`, functional-test walkthroughs, `SERVICE_ARCHITECTURE_KNOWLEDGE_BASE.md`, `SUBSCRIPTION_CHANGE_FLOW.md`, `V2_RESTRUCTURING_PLAYBOOK.md`, NFR review CSV.
+- MUST: State what is established (with file paths) vs assumed; use finding/standard IDs; date and owner; keep docs in markdown under `docs/`.
+impl:
+- Write for the next engineer; include "how to verify".
+ex: text | Doc header
+Status | Owner | Date | Evidence (paths) | Open questions
+/ex
+fail:
+- Mark uncertain statements explicitly.
+test:
+- Links valid.
+anti:
+- Docs without evidence.
+check:
+- Evidence; owner; date.
+
+@@ architecture-documentation | Architecture Documentation
+ev: E2
+cls: VERIFIED (DOC-01, ARCH-07)
+std: DOC-01, ARCH-01, ARCH-07
+rel: technical-documentation, architecture-decision-records, service-boundary-responsibility, event-driven-architecture
+d: Use when documenting service architecture - context, boundaries, data ownership, flows (sequence), dependencies, failure policies, deployment topology - with diagrams in text/mermaid and standards references.
+scope: Architecture docs.
+app: All.
+purpose: Shared understanding.
+when:
+- New service; boundary changes.
+org:
+- MUST sections: Context & responsibilities; Zones/layers; Data ownership; Interfaces and contracts (APIs/events/webhooks); Dependency table with fail-open/closed policy; Runtime (workers, jobs, shutdown); Observability; Security model; Open decisions (link conflicts).
+- VERIFIED: references in reference repos use `ARCH-LLD-003` (envelope) and `ADR-004` (error codes) identifiers.
+impl:
+- Add diagrams as mermaid/text.
+ex: text | Dependency table
+Dependency | Direction | Contract | Auth | Failure policy
+/ex
+fail:
+- N/A.
+test:
+- Review.
+anti:
+- Outdated diagrams.
+check:
+- Sections; links.
+
+@@ architecture-decision-records | Architecture Decision Records (ADR)
+ev: E2
+cls: VERIFIED (DOC-01)
+std: DOC-01, ARCH-01
+rel: architecture-documentation, architecture-review, technical-debt-assessment
+d: Use when a decision deviates from or chooses between organizational patterns, or settles an unresolved conflict - record context, decision, alternatives, consequences, status in docs/adr/ADR-NNN-title.md.
+scope: ADRs.
+app: All repos.
+purpose: Traceable decisions.
+when:
+- Choosing between options; accepting a deviation; resolving C-xx.
+org:
+- VERIFIED: `docs/adr/ADR-001-...md` numbering, titles in kebab-case, statuses (proposed/accepted), references from code (`ADR-004`).
+- MUST: Each ADR: Status, Context, Decision, Alternatives, Consequences, Standards affected (IDs), Approvers, Date; link from README; never edit accepted ADRs (supersede).
+- MUST: Decisions resolving conflicts update the catalog and the skills.
+impl:
+- Create next number; link.
+ex: text | Template
+# ADR-00N Title | Status | Context | Decision | Alternatives | Consequences | Standards affected
+/ex
+fail:
+- N/A.
+test:
+- n/a
+anti:
+- Decisions in chat only.
+check:
+- Numbered; linked.
+
+@@ api-documentation | API Documentation
+ev: E2
+cls: VERIFIED (API-07, TEST-03)
+std: API-07, TEST-03, DOC-01
+rel: swagger-openapi, api-contract-testing, readme-documentation, postman-functional-testing
+d: Use when documenting an API for consumers - OpenAPI spec, endpoint table in README, request/response examples with the standard envelopes, error code list from the catalog, auth requirements, headers, versioning and deprecations, Postman collection.
+scope: Consumer-facing API docs.
+app: HTTP APIs.
+purpose: Consumers can integrate without reading code.
+when:
+- Endpoint/contract change.
+org:
+- MUST: Include for each endpoint: purpose, auth, headers (`x-correlation-id`, `Idempotency-Key`), request schema, success envelope example, error codes (catalog `code` + `numericCode` + HTTP), pagination, rate limits, idempotency/retry guidance, version/deprecation.
+- MUST: Generated/maintained from the spec; Postman collection updated.
+impl:
+- Update spec + README + collection.
+ex: text | Error table
+code | numericCode | HTTP | meaning
+/ex
+fail:
+- N/A.
+test:
+- Spec test.
+anti:
+- Doc/spec drift.
+check:
+- Complete per endpoint.
+
+@@ deployment-documentation | Deployment Documentation
+ev: E3
+cls: PARTIAL (pipelines/Docker documented) / gaps
+std: OPS-01, OPS-02, OPS-04, DOC-01
+rel: environment-deployment-standards, ci-cd-pipeline, docker-containerization, operational-runbooks, rollback-strategy
+d: Use when documenting how a service is built and deployed - pipelines per environment, image names and tags, variable groups, required environment variables per environment, Azure resources and role assignments, health probes, ports. The reference repos document the pipelines only in YAML; no deploy step or manifests exist.
+scope: Deployment docs.
+app: Azure DevOps + ACR + Azure hosting.
+purpose: Anyone can deploy and diagnose.
+when:
+- New service; pipeline change.
+org:
+- VERIFIED facts to document: branches `devtest`/`staging`/`main`; pipelines `azure-pipeline-devtest.yaml`, `-stg.yaml`, `-prod.yaml`; ACR `<env>acr.azurecr.io`, repository `<env>/<service>`; tags short SHA (8); `AuthToken` build arg; variable group `iNextLabs-DevTest-Variables`; port (3000/3001) and health path.
+- MUST: Document the missing pieces explicitly (who deploys the image, to which hosting service, how config/secrets are injected) - do not invent them.
+impl:
+- Write `docs/DEPLOYMENT.md` with the facts and open questions.
+ex: text | Table
+Env | Branch | Pipeline | Registry/repo | Tag | Hosting (TBD) | Probes
+/ex
+fail:
+- N/A.
+test:
+- Dry-run review.
+anti:
+- Guessing hosting.
+check:
+- Facts; gaps.
+
+@@ operational-runbooks | Operational Runbooks
+ev: E0
+cls: GENERIC (closest: LOCAL-DEV-STACK.md and functional-test guides)
+std: OPS-04, OBS-06
+rel: alerting-standards, rollback-strategy, dead-letter-queue-handling, production-readiness-review, deployment-documentation
+d: Use when documenting operations - symptoms, diagnosis, remediation for readiness failures, outbox backlog/failed rows, Redis outage, upstream-service outage, stuck workers, DLQ/poison handling, secret rotation, rollback. No runbooks exist in the reference repos beyond local dev guides.
+scope: Runbooks.
+app: Ops.
+purpose: Faster, safer incident response.
+when:
+- Before production.
+org:
+- VERIFIED seeds: `docs/LOCAL-DEV-STACK.md`, `docs/functional-tests/**/TEST-SETUP.md`, log hints in code ("Check REDIS_ACCESS_KEY...").
+- GENERIC runbook template: Symptom -> Impact -> Diagnosis (log queries by `code`, readiness output, outbox rows) -> Remediation -> Escalation -> Verification.
+- MUST: Each alert links a runbook (`alerting-standards`).
+impl:
+- One runbook per alert/failure mode.
+ex: text | Runbook entry
+Outbox failed rows > 0 | query status:"failed" | check lastError | fix cause | reset status to pending via script | verify published
+/ex
+fail:
+- N/A.
+test:
+- Game-day.
+anti:
+- Untested runbooks.
+check:
+- Symptom/diagnosis/fix.
+
+@@ developer-onboarding-documentation | Developer Onboarding Documentation
+ev: E2
+cls: VERIFIED (DOC-01)
+std: DOC-01, PKG-01, CFG-01
+rel: readme-documentation, internal-package-management, in-memory-test-harness, technical-documentation
+d: Use when preparing onboarding material - repo access and GitHub Packages token (AuthToken), tooling, local stack (stubs, in-memory doubles, seeds), env setup from .env.example, run/test commands, standards catalog and skills pointers, first-PR checklist.
+scope: Onboarding docs.
+app: All.
+purpose: New developer productive quickly and compliant.
+when:
+- New hires; new service.
+org:
+- VERIFIED: `docs/LOCAL-DEV-STACK.md`, `.env.example` comments ("Copy to .env or .env.local"), a local stub of the upstream service, test harness README, repo `.claude/skills`.
+- MUST: Include `.npmrc` token instructions using `${AuthToken}` (no real tokens), how to run unit/integration/e2e, how to find standards (this catalog) and skills, PR rules (target branch, Azure Boards link).
+impl:
+- Maintain `docs/ONBOARDING.md`.
+ex: text | Steps
+request package access -> set AuthToken -> npm ci -> copy .env.example -> npm test -> npm run dev
+/ex
+fail:
+- N/A.
+test:
+- New-hire dry run.
+anti:
+- Tokens in docs.
+check:
+- Steps work.
+
+@@ docker-containerization | Docker & Containerization
+ev: E2
+cls: TECH / UNRESOLVED (C-20)
+std: OPS-01, PKG-01, CFG-07, OBS-04
+rel: internal-package-management, ci-cd-pipeline, liveness-readiness-checks, graceful-shutdown, pipeline-security-scanning
+d: Use when writing or reviewing Dockerfiles - multi-stage build, AuthToken build-arg with .npmrc removed, prune dev dependencies, copy only dist and production node_modules, non-root user, dumb-init, HEALTHCHECK, pinned Node LTS, .dockerignore, EXPOSE.
+scope: Container images.
+app: Node on Alpine.
+purpose: Small, secure, signal-correct images.
+when:
+- New Dockerfile; image review.
+org:
+- MUST (best observed pattern): stage `builder` (`node:22-alpine`): `COPY package*.json .npmrc*`, `ARG AuthToken`/`ENV AuthToken`, `npm ci`, `rm -f .npmrc`, copy `tsconfig.json` + `src`, `npm run build`, `npm prune --omit=dev && npm cache clean --force`; stage `production`: `apk add dumb-init`, non-root user (`addgroup -g 1001 nodejs`, `adduser -S nodejs -u 1001`), `ENV NODE_ENV=production`, copy only `package*.json`, `node_modules`, `dist` (+ needed `docs`), `chown`, `USER nodejs`, `EXPOSE <PORT>`, `HEALTHCHECK`, `ENTRYPOINT ["dumb-init","--"]`, `CMD ["node","dist/index.js"]`.
+- MUST: A `.dockerignore` excludes `.env*`, `.git`, `node_modules`, tests, docs not needed.
+- MUST NOT (reference defects, C-20): copying the whole build tree into the runtime stage, running as root, leaving `.npmrc`/tokens in layers, `CMD ["npm","run","start"]` (breaks signal delivery), unpinned/mismatched Node versions across services.
+- UNRESOLVED: Node 20 vs 22 (C-20) - follow the repo; propose alignment via ADR.
+impl:
+- Start from the template; build and run locally with a dummy token; verify image has no `.npmrc` and runs as non-root.
+ex: dockerfile | Runtime stage (reference)
+FROM node:22-alpine AS production
+RUN apk add --no-cache dumb-init && addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
+RUN chown -R nodejs:nodejs /app
+USER nodejs
+EXPOSE 3001
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "dist/index.js"]
+/ex
+fail:
+- Build fails if `AuthToken` missing (401) - fix pipeline variable.
+sec:
+- No secrets in layers; non-root; minimal base; Trivy scan gates push.
+test:
+- `docker run` with env; health probe passes; `docker history` has no token.
+anti:
+- Single-stage with dev deps.
+- `latest` base tags.
+check:
+- Multi-stage; token removed; non-root; HEALTHCHECK; dumb-init.
+
+@@ kubernetes-deployment | Kubernetes Deployment
+ev: E0
+cls: GENERIC (no Kubernetes assets in the reference repos)
+std: OPS-04, OBS-04
+rel: liveness-readiness-checks, docker-containerization, deployment-documentation, graceful-shutdown, environment-deployment-standards
+d: Use when asked to deploy to Kubernetes. The reference repositories target Azure container hosting (Container Apps/ACI/App Service per Dockerfile comments) and contain no manifests or Helm charts; this is a generic baseline and requires approval and platform input.
+scope: Kubernetes manifests.
+app: AKS.
+purpose: Avoid inventing platform conventions.
+when:
+- AKS deployment requested.
+org:
+- GENERIC: Deployment with immutable image tag (short SHA), `readinessProbe` -> `/health/ready`, `livenessProbe` -> `/health/live`, `startupProbe`, resource requests/limits, `terminationGracePeriodSeconds` > drain timeout, config from ConfigMap/Secret (secrets not in manifests), non-root `securityContext`, `PodDisruptionBudget`, HPA on measured metrics.
+- MUST: Obtain platform team conventions (namespaces, ingress, secret store) before writing manifests; record in an ADR.
+impl:
+- Draft in a branch; do not merge without approval.
+ex: yaml | GENERIC probes
+readinessProbe: { httpGet: { path: /health/ready, port: 3000 }, periodSeconds: 10, timeoutSeconds: 3 }
+livenessProbe: { httpGet: { path: /health/live, port: 3000 }, periodSeconds: 20 }
+/ex
+fail:
+- N/A.
+test:
+- kubeconform/dry-run.
+anti:
+- Secrets in manifests; `latest` tags.
+check:
+- Approval; probes; limits.
+
+@@ ci-cd-pipeline | CI/CD Pipeline
+ev: E1
+cls: VERIFIED (OPS-02, OPS-03, TEST-04)
+std: OPS-02, OPS-03, TEST-04, PKG-01
+rel: pipeline-security-scanning, deployment-release-management, docker-containerization, internal-package-management, unit-testing
+d: Use when creating or changing build/test/release pipelines - Azure DevOps YAML per environment, branch triggers (devtest/staging/main), UnitTest gating Build, image tagged with the 8-char git SHA, AuthToken injection, GitHub Actions CI (tsc + tests) and Azure Boards PR validation.
+scope: Pipelines.
+app: Azure DevOps + GitHub Actions.
+purpose: Consistent, gated builds.
+when:
+- Pipeline edits.
+org:
+- VERIFIED: `azure-pipeline-devtest.yaml`/`-stg.yaml`/`-prod.yaml`; `trigger: branches: include: [<env branch>]`; `pr: exclude *`; variable group `iNextLabs-DevTest-Variables`; agent pool `$(AgentName)`; `SHORT_SHA=$(git rev-parse --short=8 HEAD)` -> `##vso[build.updatebuildnumber]`; Docker@2 build with `--build-arg AuthToken=$(AuthToken)`, push with tag `$(commitId)`.
+- VERIFIED: GitHub `ci.yml`: PRs to `devtest|staging|main`; Node 22; `npm ci`; `npx tsc --noEmit`; `npm test`; `permissions: contents: read, packages: read`; concurrency cancel-in-progress; `AuthToken: secrets.PACKAGES_TOKEN || secrets.GITHUB_TOKEN`. `validate-pr.yml` calls `iNextLabs/github-workflows/.github/workflows/validate-azure-boards-pr.yml@main`.
+- MUST: Test stage gates Build/Push (config repo UnitTest -> Build); publish JUnit/Cobertura.
+- MUST: Tag images with the SHA only for deployment; do not rely on `latest` (devtest pipelines push `latest` too - defect, C-21).
+- GAP: No deploy/release stage exists in either repo; do not invent one without platform input (`deployment-release-management`).
+impl:
+- Keep stages aligned across environments; prod adds scans (`pipeline-security-scanning`).
+ex: yaml | Build step (reference)
+- task: Docker@2
+  inputs: { command: build, repository: $(imageRepository), dockerfile: $(dockerfilePath), containerRegistry: $(dockerRegistryServiceConnection), buildContext: $(buildContext), arguments: "--build-arg AuthToken=$(AuthToken)", tags: "$(commitId)" }
+/ex
+fail:
+- Failed stage stops the pipeline.
+sec:
+- Secrets only via variable groups.
+test:
+- Dry-run on a branch.
+anti:
+- Divergent build-arg names per pipeline (`AuthToken` vs `AUTHTOKEN`).
+check:
+- Gates; tags; token handling.
+
+@@ deployment-release-management | Deployment & Release Management
+ev: E3
+cls: PARTIAL (build/push only) / GENERIC rest
+std: OPS-02, API-08, CFG-06
+rel: ci-cd-pipeline, rollback-strategy, environment-deployment-standards, production-readiness-review, feature-flag-management, breaking-change-review
+d: Use when planning a release - promotion devtest to staging to main, change communication, feature flags, migrations, deprecation dates, production readiness gate and who deploys. The repos only build and push images; deployment itself is outside the evidenced scope.
+scope: Release process.
+app: Azure.
+purpose: Predictable, reversible releases.
+when:
+- Release planning.
+org:
+- VERIFIED: promotion by branch (`devtest` -> `staging` -> `main`), SHA-tagged images per environment registry, PR validation with Azure Boards, internal package releases via tags `v<version>` on `main`.
+- MUST: Releases include: change notes (breaking changes flagged), flag states, migration steps, dependency/package versions, rollback tag, post-deploy verification (readiness, smoke).
+- GAP: How the image reaches the hosting service is not in the repos; document and ask.
+impl:
+- Use `production-readiness-review` checklist per release.
+ex: text | Release note
+Version/SHA | Changes | Breaking? | Flags | Migrations | Rollback to <sha> | Verification
+/ex
+fail:
+- Failed verification -> `rollback-strategy`.
+test:
+- Smoke tests.
+anti:
+- Friday big-bang.
+check:
+- Notes; rollback; verification.
+
+@@ rollback-strategy | Rollback Strategy
+ev: E0
+cls: GENERIC (enabled by SHA-tagged images)
+std: OPS-04, OPS-02, CFG-06
+rel: deployment-release-management, feature-flag-management, database-migration, operational-runbooks, production-readiness-review
+d: Use when planning how to revert - redeploy the previous immutable image tag, flip feature flags off, keep data changes backward compatible (guarded migrations), and communicate. No rollback automation exists in the repos.
+scope: Rollback.
+app: Azure.
+purpose: Fast safe reversal.
+when:
+- Failed release.
+org:
+- VERIFIED enablers: SHA-tagged images in ACR, env-var feature flags default off, guarded migration pattern.
+- GENERIC: Rollback = deploy previous SHA; prefer flag-off for behaviour changes; never roll back across irreversible data migrations (use forward fix); record rollback tag in the release note.
+- MUST: Do not depend on `latest` for rollback.
+impl:
+- Rehearse in staging.
+ex: text | Steps
+identify previous SHA -> redeploy -> verify readiness -> flag off -> announce
+/ex
+fail:
+- N/A.
+test:
+- Rehearsal.
+anti:
+- Rebuilding old code instead of redeploying the artifact.
+check:
+- Tag; flags; data compatibility.
+
+@@ environment-deployment-standards | Environment Deployment Standards
+ev: E2
+cls: VERIFIED (CFG-03, OPS-02)
+std: CFG-03, OPS-02, CFG-04, OPS-01
+rel: environment-specific-configuration, ci-cd-pipeline, deployment-documentation, configuration-security, deployment-release-management
+d: Use when defining per-environment deployment rules - devtest, staging, customerdev, production names and branches, per-environment registries and variable groups, strictness differences (record_only vs enforce, relaxed local), secrets per environment.
+scope: Environment model for delivery.
+app: Azure.
+purpose: Consistent environments.
+when:
+- New environment/service.
+org:
+- VERIFIED: environments `devtest`, `staging`, `customerdev`, `production`; branches `devtest`, `staging`, `main`; registry per env (`<env>acr.azurecr.io`), repository pattern `<env>/<service>`; `DEPLOYMENT_ENV`/`APP_ENV` set per environment; non-prod enforcement default `record_only`.
+- MUST: Production defaults to strict (unset env = production); no relax flags honoured in production; separate secrets per environment.
+- MUST: Document each environment's required variables (`required-environment-variables`).
+impl:
+- Add an environment matrix to deployment docs.
+ex: text | Matrix
+Env | Branch | Registry | APP_ENV | Enforcement default
+devtest | devtest | <devtest-registry> | devtest | record_only
+production | main | <prod registry> | production | enforce
+/ex
+fail:
+- N/A.
+test:
+- Config tests per env.
+anti:
+- Shared secrets between environments.
+check:
+- Matrix; strictness.
+
+@@ pipeline-security-scanning | Pipeline Security Scanning
+ev: E2
+cls: VERIFIED (OPS-02)
+std: OPS-02, SEC-06, PKG-01
+add: The production pipeline's mandatory SecretScan (TruffleHog), SonarQube quality gate, Snyk SCA and Trivy container scan before Push form a reusable delivery-security standard.
+rel: ci-cd-pipeline, dependency-review, secrets-management, docker-containerization, security-testing
+d: Use when creating or modifying production pipelines - required scan stages and their order (SecretScan, SonarQubeScan with quality gate, SnykScan, Build, TrivyScan, Push), report publication and gating of the image push.
+scope: Pipeline scan stages.
+app: Azure DevOps.
+purpose: No unscanned image reaches the registry.
+when:
+- Pipeline edits for staging/prod.
+org:
+- VERIFIED stage order in `azure-pipeline-prod.yaml`: `SecretScan` (TruffleHog report published) -> `SonarQubeScan` (quality gate) -> `SnykScan` (SCA, summary) -> `Build` -> `TrivyScan` (JSON + HTML report published, ACR login) -> `Push`.
+- MUST: Push depends on all scans; reports published as artifacts; Snyk installs dependencies with `AuthToken`; Node installed in scan jobs.
+- GAP: devtest pipelines lack scans and a unit-test stage in the enforcement repo - note as risk, do not copy.
+impl:
+- Reuse the prod pipeline stage templates.
+ex: yaml | Gate (pattern)
+- stage: Push
+  dependsOn: [SecretScan, SonarQubeScan, SnykScan, Build, TrivyScan]
+/ex
+fail:
+- Scan failure blocks push; findings tracked.
+sec:
+- Scan tokens in variable groups.
+test:
+- Seed a fake secret in a branch to confirm detection (without real secrets).
+anti:
+- Allowing push on scan failure.
+check:
+- Order; gating; reports.

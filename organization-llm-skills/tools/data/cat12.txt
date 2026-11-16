@@ -1,0 +1,383 @@
+@@ llm-api-call | LLM API Call
+ev: E0
+cls: GENERIC (no LLM invocation exists in the reference repositories)
+std: LLM-01, INT-01, RES-02, ERR-09, SEC-02
+rel: llm-client-management, llm-retry-timeout, llm-error-handling, external-api-client, structured-llm-output, ai-guardrails
+d: Use when code must call a large language model. The reference repositories contain only AI configuration storage and token cost accounting, no model invocation, so this skill is a clearly labeled generic baseline that applies the organization's external-call, security and error standards. It is not an organizational standard.
+scope: Calling an LLM endpoint.
+app: Azure OpenAI / hosted models from Node.
+purpose: Safe, bounded, observable model calls.
+when:
+- Adding any LLM call.
+org:
+- GENERIC: Treat the model endpoint as an external dependency: use `external-api-client` rules - one client per model deployment, timeout from env (`LLM_TIMEOUT_MS`), Managed Identity where the provider supports it (`azure-managed-identity`) else key from env, correlation ID propagated, typed unavailable error, no secret logging.
+- GENERIC: Record `model/deployment key, input/output/cached/reasoning tokens, latency` in structured logs and usage events (`token-management`); never log prompts/completions containing PII.
+- MUST: Model keys and endpoints are secrets (mask `key`, `endpoint`) (`LLM-02`); any new SDK dependency requires approval (PKG-01 principle: no silent substitution of internal tooling).
+- MUST: Report in the PR that no organizational LLM standard exists and list assumptions.
+impl:
+- Build the client module (`llm-client-management`), the call wrapper with retries/timeouts (`llm-retry-timeout`), output validation (`llm-response-validation`), error mapping (`llm-error-handling`).
+ex: ts | GENERIC call wrapper
+const res = await withTimeout(client.complete({ model: deployment, messages, maxTokens }), config.llm.timeoutMs);
+logger.info({ model: deployment, inputTokens: res.usage.input, outputTokens: res.usage.output, latencyMs }, "LLM call completed");
+/ex
+fail:
+- Map to catalog entries (`LLM_UNAVAILABLE` 503, `LLM_TIMEOUT` 504, `LLM_RATE_LIMITED` 429->503, `LLM_INVALID_OUTPUT` 502) via `error-catalog-management`.
+sec:
+- Prompt injection: never place untrusted text in privileged instructions; validate outputs; do not execute model output.
+test:
+- Mock the model client; timeouts; malformed output; token accounting.
+anti:
+- Logging prompts.
+- Unbounded retries.
+- Calling models without timeouts.
+check:
+- Baseline labeled; client; timeout; masking; mapping.
+
+@@ llm-client-management | LLM Client Management
+ev: E0
+cls: GENERIC; deployment/key data model is VERIFIED in reference service A (LLM-02)
+std: LLM-01, LLM-02, INT-06, ARCH-04, CFG-01
+rel: model-configuration, azure-sdk-client-management, llm-api-call, secrets-management, dependency-injection
+d: Use when creating or sharing LLM clients - lazy singleton per deployment, configuration from the central model/deployment configuration, secret handling, close and test seams. Generic baseline reusing the organization's SDK-client pattern; the model/deployment data source is reference service A's AI configuration.
+scope: LLM client lifecycle.
+app: Node.
+purpose: One configured client per deployment.
+when:
+- Adding model access.
+org:
+- VERIFIED: Model master, deployments and per-bot AI configuration are managed by reference service A (models from `@inextlabs/schema-models`, Redis `aIConfig:{clientId}:{botId}:{featureId|all}`); keys/endpoints are masked in logs.
+- GENERIC: Follow `azure-sdk-client-management` (lazy `getLlmClient(deployment)` with a `Map`, `closeLlmClients()`, `__setLlmClientForTests`); resolve deployment/key via the configuration service API rather than duplicating secrets in each service.
+- MUST: Never return model `key`/`endpoint` from public endpoints.
+impl:
+- Create `integrations/llmClient.ts`; resolve deployment config; cache with TTL.
+ex: ts | GENERIC
+const clients = new Map<string, LlmClient>();
+export const getLlmClient = (deploymentKey: string) => clients.get(deploymentKey) ?? create(deploymentKey);
+/ex
+fail:
+- Missing deployment -> catalog `DEPLOYMENT_NOT_FOUND` 404/`MODEL_NOT_FOUND`.
+test:
+- Resolution, caching, missing deployment.
+anti:
+- Keys in code.
+check:
+- Singleton; config source; masked.
+
+@@ prompt-management | Prompt Management
+ev: E0
+cls: GENERIC (no organizational evidence)
+std: LLM-01, DOC-01
+rel: prompt-versioning, structured-llm-output, ai-guardrails, llm-api-call, architecture-decision-records
+d: Use when prompts are authored, stored, parameterized or reviewed. No prompt management exists in the reference repositories; this is a generic baseline.
+scope: Prompt authoring and storage.
+app: Any.
+purpose: Reviewable, testable prompts.
+when:
+- Introducing prompts.
+org:
+- GENERIC: Keep prompts as versioned files/records (not inline strings in handlers), parameterized with typed variables, with an owner and test cases; separate system instructions from untrusted user content; no secrets/PII in templates.
+- MUST: Obtain approval before choosing a prompt store.
+impl:
+- `prompts/<name>.v<N>.md` + loader + tests.
+ex: text | Layout (GENERIC)
+prompts/summarize.v1.md  | prompts/summarize.v2.md  | prompts/index.ts (loader with variable validation)
+/ex
+fail:
+- Missing variable -> validation error before the call.
+test:
+- Golden-output tests with mocked model.
+anti:
+- String concatenation of user text into system prompts.
+check:
+- Versioned; parameterized; tested.
+
+@@ prompt-versioning | Prompt Versioning
+ev: E0
+cls: GENERIC (no organizational evidence)
+std: LLM-01, API-08
+rel: prompt-management, model-configuration, message-versioning, breaking-change-review
+d: Use when prompts change in production - version identifiers, rollout, evaluation and rollback. Generic baseline; no organizational convention exists.
+scope: Prompt lifecycle.
+app: Any.
+purpose: Reproducible behaviour and rollback.
+when:
+- Changing a prompt.
+org:
+- GENERIC: Immutable `name@version`, logged with every call (`promptVersion`), selected by configuration/feature flag (`feature-flag-management`), evaluated against a fixed test set before rollout, old versions retained for rollback.
+- MUST: Approval for the version scheme.
+impl:
+- Add `promptVersion` to logs and usage events.
+ex: text | Log field
+{ promptName: "summarize", promptVersion: 2 }
+/ex
+fail:
+- Unknown version -> config error.
+test:
+- Version pinning.
+anti:
+- Editing a released version in place.
+check:
+- Immutable; logged; rollback.
+
+@@ token-management | Token Management
+ev: E2
+cls: VERIFIED (LLM-03) accounting side
+std: LLM-03, CTX-04, MSG-04
+rel: token-cost-optimization, cost-calculation-strategy-registry, usage-event-identity, llm-api-call, model-configuration
+d: Use when counting or recording LLM tokens - input, cached input, output, reasoning and embedding tokens, per-call usage events with deterministic IDs and derived credit events - and when enforcing limits against them.
+scope: Token accounting and limits.
+app: Node usage services.
+purpose: Accurate, dedupable token usage.
+when:
+- Recording usage; enforcing token limits.
+org:
+- VERIFIED: Token kinds `inputTokens`, `cachedInputTokens`, `outputTokens`, `reasoningTokens`, `embeddingInputTokens`, `transactions`; metric keys such as `llmInputTokens`; each recorded fact has a deterministic `usageEventId` (`usage-event-identity`), derived `aiCredits` event via a derived-ID helper.
+- MUST: Token values are non-negative numbers validated at the API; calculated metrics (credits) cannot be supplied by callers (`CALCULATED_METRIC_FORBIDDEN`).
+- GENERIC: Count tokens with the provider's usage response, not local estimation, except for pre-flight budgeting.
+impl:
+- Map provider usage to the fixed token kinds; publish events with IDs.
+ex: ts | Input to cost calculation
+const input = { inputTokens: usage.prompt, cachedInputTokens: usage.cached ?? 0, outputTokens: usage.completion, reasoningTokens: usage.reasoning ?? 0 };
+/ex
+fail:
+- Missing usage -> record zero with a `warn`, never fabricate.
+test:
+- Each token kind; derived ID stability.
+anti:
+- Estimating billed tokens locally as truth.
+check:
+- Kinds; IDs; validation.
+
+@@ token-cost-optimization | Token & Cost Optimization
+ev: E2
+cls: VERIFIED (LLM-03) pricing side / GENERIC levers
+std: LLM-03, DB-05, ARCH-06
+rel: token-management, cost-calculation-strategy-registry, caching-strategy, llm-api-call, performance-review
+d: Use when reducing or accounting for LLM cost - pricing resolution with L1/L2 caches, credits conversion, decorators for free tier/margin/minimum charge, and (generic) prompt/caching levers.
+scope: Cost computation and reduction.
+app: Node.
+purpose: Correct, cheap cost accounting.
+when:
+- Changing pricing or cost logic.
+org:
+- VERIFIED: Pricing documents `llm_model_pricing` resolved L1 in-process (1 h) -> L2 Redis (`pricing:{llmKey}:{provider}:{region}`, 3600 s) -> Mongo; `usdToCredits` with `USD_PER_CREDIT`; missing pricing -> credits skipped with a log (not an exception).
+- VERIFIED: Cost via `CostCalculatorRegistry` strategies (`cost-calculation-strategy-registry`).
+- GENERIC levers (not organizational): shorter prompts, response length caps (`maxTokens`), provider prompt caching, model tiering, batching.
+impl:
+- Add pricing changes through the pricing collection and tests; never hard-code prices.
+ex: text | Flow
+llmKey -> PricingCache(L1->L2->Mongo) -> strategy.calculate(tokens) -> decorators -> usdToCredits -> aiCredits event
+/ex
+fail:
+- Missing pricing logged; zero cost.
+test:
+- Each token kind price; decorators; cache tiers.
+anti:
+- Hard-coded prices.
+check:
+- Source; caches; tests.
+
+@@ structured-llm-output | Structured LLM Output
+ev: E0
+cls: GENERIC
+std: LLM-01, API-05
+rel: llm-response-validation, prompt-management, llm-api-call, request-validation, ai-guardrails
+d: Use when a model must return structured data (JSON). Generic baseline: request a schema, parse defensively, validate with the repo's validation library, and handle failures. No organizational implementation exists.
+scope: Structured outputs.
+app: Node.
+purpose: Machine-consumable results.
+when:
+- Parsing model output.
+org:
+- GENERIC: Prefer provider-native structured output/JSON mode; validate with the repo's validator (Zod where present - do not add one); strip code fences; bounded repair retry (1) then fail.
+- MUST: Never `eval`; treat output as untrusted input.
+impl:
+- Define the schema once; reuse for prompt and validation.
+ex: ts | GENERIC
+const parsed = Schema.safeParse(JSON.parse(stripFences(text)));
+if (!parsed.success) throw llmInvalidOutput(parsed.error.flatten());
+/ex
+fail:
+- Invalid -> `LLM_INVALID_OUTPUT` (502).
+test:
+- Valid/invalid/fenced JSON.
+anti:
+- Regex scraping of free text.
+check:
+- Schema; validation; failure path.
+
+@@ llm-response-validation | LLM Response Validation
+ev: E0
+cls: GENERIC
+std: LLM-01, API-05, ERR-02
+rel: structured-llm-output, ai-guardrails, llm-error-handling, request-validation
+d: Use when accepting any model response - schema, length, content policy, grounding and PII checks before it is used or returned. Generic baseline.
+scope: Validating model outputs.
+app: Node.
+purpose: Do not trust model output.
+when:
+- Before using output.
+org:
+- GENERIC: Validate schema, enum membership, numeric ranges, max length; block secret/PII patterns; require citations/grounding when the feature claims it; log validation outcome (not content).
+- MUST: Validation failures map to a catalog error and never leak raw output in error `details`.
+impl:
+- Validate in one function used by all callers.
+ex: ts | GENERIC
+if (out.length > MAX || containsSecret(out)) throw llmInvalidOutput();
+/ex
+fail:
+- 502 `LLM_INVALID_OUTPUT`.
+test:
+- Boundary cases.
+anti:
+- Returning raw output on failure.
+check:
+- Rules; errors.
+
+@@ llm-retry-timeout | LLM Retry & Timeout
+ev: E0
+cls: GENERIC built on RES-02/RES-03 (E2/E3)
+std: RES-02, RES-03, INT-01, LLM-01
+rel: llm-api-call, retry-policy, timeout-management, exponential-backoff, circuit-breaker
+d: Use when configuring timeouts and retries for model calls - per-call timeout, retry on 429/5xx with backoff and Retry-After, no retry on 4xx content errors, total budget. Generic baseline inheriting the organization's timeout and retry rules.
+scope: LLM call resilience.
+app: Node.
+purpose: Bounded latency and cost.
+when:
+- Calling models.
+org:
+- MUST: Timeout from env (`LLM_TIMEOUT_MS`), shorter than the caller's request budget (`timeout-management`).
+- GENERIC: Retry 429/503/timeout up to 2 times honouring `Retry-After` using `withRetry`; never retry content-filter or validation errors; cap total tokens spent on retries.
+impl:
+- Wrap via `withRetry`; log attempts.
+ex: ts | GENERIC
+await withRetry(() => callModel(req), { maxAttempts: 3, delayMs: 500, backoffMultiplier: 2, maxDelayMs: 4000 });
+/ex
+fail:
+- Exhausted -> `LLM_UNAVAILABLE`.
+test:
+- 429 then success; content filter not retried.
+anti:
+- Retrying forever.
+check:
+- Timeouts; retry classes.
+
+@@ ai-guardrails | AI Guardrails
+ev: E0
+cls: GENERIC
+std: LLM-01, SEC-06, OBS-03
+rel: llm-response-validation, structured-llm-output, prompt-management, data-protection, security-review
+d: Use when deploying model-backed features - input filtering, prompt-injection defence, output checks, PII handling, abuse limits, human override. No guardrail implementation exists in the reference repositories; generic baseline requiring approval.
+scope: Safety controls around models.
+app: Any.
+purpose: Safe AI features.
+when:
+- Exposing model output to users or systems.
+org:
+- GENERIC: Separate instructions from untrusted content; minimize PII sent to models; filter/validate outputs; rate limit per tenant (`api-rate-limiting`); log metadata not content; never let model output trigger privileged actions without validation.
+- MUST: Approval for third-party guardrail services.
+impl:
+- Threat-model the feature; add checks.
+ex: text | Checklist
+untrusted content isolated | PII minimized | output validated | tenant rate limit | no privileged actions from raw output
+/ex
+fail:
+- Block with catalog error.
+test:
+- Injection attempts.
+anti:
+- Executing model-produced code/commands.
+check:
+- Checklist done.
+
+@@ model-configuration | Model Configuration
+ev: E2
+cls: VERIFIED (LLM-02) reference service A
+std: LLM-02, OBS-03, DB-05, SEC-06
+rel: llm-client-management, secrets-management, caching-strategy, sensitive-data-masking-in-logs
+d: Use when managing model catalog, deployments and per-bot AI configuration - reference service A stores model master, deployments/resources and AI config overrides, caches them in Redis, and masks keys and endpoints.
+scope: Model/deployment configuration data.
+app: Reference service A + consumers.
+purpose: Central, secret-safe model configuration.
+when:
+- Adding or changing model/deployment configuration.
+org:
+- VERIFIED: Services `modelMaster.service`, `aiResources.service`, `aiConfig.service`/`aiConfigPlatform.service`; Mongoose model `aIConfigModel` (`@inextlabs/schema-models`); per-client DB for tenant overrides; Redis `aIConfig:{clientId}:{botId}:{featureId|all}` TTL 24 h; catalog errors `MODEL_NOT_FOUND`, `DEPLOYMENT_NOT_FOUND`, `FEATURE_MASTER_NOT_FOUND`.
+- MUST: `key`, `endpoint`, `connectionString` fields are masked (`MASK_CONFIG`) and never returned by public endpoints; mutations are audited (`audit-logging`).
+- MUST: Changes invalidate caches (`cache-invalidation`).
+impl:
+- Extend through the services above; update mask config and docs.
+ex: ts | Cache key (reference)
+const cacheKey = featureId ? "aIConfig:" + clientId + ":" + botId + ":" + featureId : "aIConfig:" + clientId + ":" + botId + ":all";
+/ex
+fail:
+- Missing model/deployment -> catalog 404.
+sec:
+- Masking; access control.
+test:
+- Cache hit/miss; masking.
+anti:
+- Returning keys.
+check:
+- Masked; audited; invalidated.
+
+@@ llm-error-handling | LLM Error Handling
+ev: E0
+cls: GENERIC built on ERR standards
+std: ERR-02, ERR-09, LLM-01, API-10
+rel: error-catalog-management, llm-api-call, llm-response-validation, integration-error-handling, error-logging
+d: Use when mapping model-call failures to catalogued errors - unavailable, timeout, rate-limited, content-filtered, invalid output, quota - with safe messages and logging. Generic baseline using the organization's error catalog.
+scope: LLM failure mapping.
+app: Node.
+purpose: Consistent errors from AI features.
+when:
+- Handling model failures.
+org:
+- MUST: Add catalog entries via `error-catalog-management` (never a parallel mechanism): `LLM_UNAVAILABLE` (503), `LLM_TIMEOUT` (504), `LLM_CONTENT_FILTERED` (422), `LLM_INVALID_OUTPUT` (502) - sequences per the service's MM/banding policy (`error-code-standards`).
+- MUST: Do not forward provider error bodies; log provider status and request ID.
+impl:
+- Map by HTTP status/type in the client module.
+ex: text | Mapping (GENERIC)
+429/503 -> LLM_UNAVAILABLE | timeout -> LLM_TIMEOUT | 400 content_filter -> LLM_CONTENT_FILTERED | bad JSON -> LLM_INVALID_OUTPUT
+/ex
+fail:
+- As mapped.
+test:
+- Each branch.
+anti:
+- Surfacing provider messages.
+check:
+- Catalog; logs.
+
+@@ cost-calculation-strategy-registry | Cost Calculation Strategy Registry
+ev: E2
+cls: VERIFIED (ARCH-06, LLM-03)
+std: ARCH-06, LLM-03, DB-05
+add: A Strategy + Registry + Decorator pricing engine (product override then global, billing-unit strategies, free tier/margin/minimum-charge decorators) is a significant reusable pattern in reference service B.
+rel: design-patterns, token-cost-optimization, token-management, solid-principles, caching-strategy
+d: Use when computing usage cost or credits across billing units (tokens, OCR pages, characters, voice minutes, images, transactions) - register a strategy per billing unit, resolve product override then global, wrap with decorators, and cover with table tests.
+scope: Pricing calculation architecture.
+app: Node usage services.
+purpose: Extensible cost computation without switch statements.
+when:
+- Adding a billing unit, product pricing rule or discount.
+org:
+- MUST: `ICostCalculatorStrategy { strategyId; canHandle(billingUnit); calculate(input, pricingEntry) }`; `CostCalculatorRegistry.registerGlobal(unit, strategy)` and `registerProductOverride(productLine, unit, strategy)`; `resolve(unit, productLine)` order: product override (by key, then `canHandle`) -> global -> `null` (zero cost logged).
+- VERIFIED strategies: `llm-token`, `ocr-page`, `image-analysis`, `transaction`, `translation-character`, `voice-minute`; decorators `free-tier`, `margin`, `minimum-charge`; registrations in `product-calculator-registrations.ts`.
+- MUST: Pricing data comes from the pricing collection through the cache tiers; no hard-coded prices.
+- MUST: Result includes components (USD, credits) and a reason; unresolved strategy logs and yields zero rather than throwing.
+impl:
+- Implement strategy + test; register in the registrations module; never edit the registry for a new unit.
+ex: ts | Register
+registry.registerGlobal("per_million_tokens", new LlmTokenStrategy())
+        .registerProductOverride("<product>", "per_page", new OcrPageStrategy());
+/ex
+fail:
+- `null` strategy -> zero cost + `warn`.
+test:
+- Per strategy; override precedence; decorator chain.
+anti:
+- `switch(billingUnit)`.
+- Prices in code.
+check:
+- Strategy; registration; tests.

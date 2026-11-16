@@ -1,0 +1,357 @@
+@@ error-catalog-management | Error Catalog Management
+ev: E1
+cls: MANDATED (task + ARCH-LLD-003 / ADR-004) + VERIFIED
+std: ERR-01, ERR-02, ERR-03, ERR-04, ERR-05, ERR-09, PKG-01
+rel: error-code-standards, exception-to-error-mapping, global-exception-handling, api-error-response, business-exception-handling, technical-exception-handling
+d: Use when adding, changing, deprecating or referencing an error in a service - the single typed error catalog, numeric/semantic codes, HTTP mapping, throw helpers and catch-all. This is the canonical error-catalog skill; always reuse it from API, integration, messaging and security work and never create a second error mechanism.
+scope: Definition and use of the service error catalog.
+app: Services using `@inextlabs/platform-errors` (Node/TypeScript reference).
+purpose: Every failure has a stable identity (code + numericCode + HTTP status + safe message) defined in one place and thrown through one helper.
+when:
+- Any new failure path in application code.
+- Adding or changing an error code.
+- Reviewing code that throws `new Error(...)`, returns ad-hoc bodies or matches on message text.
+org:
+- MUST: One catalog per service as a `const` map; entries `{ numericCode | num, httpStatus | http, code, message }`; the service also defines `UNHANDLED_ERROR` (catch-all) - ERR-02.
+- MUST: Errors are thrown as `AppError(statusCode, code, numericCode, message, details?)` from `@inextlabs/platform-errors`, via a catalog helper (`throwXError(key, details?)` or `appErr(entry, details?)`); never `throw new Error()` for expected failures.
+- MUST: `numericCode` follows `PLATFORM_CODE + SERVICE_CODE + MODULE_NUM + SEQ` (8 digits; see `error-code-standards`); build it with the service's single local `makeErrorCode(ss, mm, seq)` helper (see `error-code-standards`).
+- MUST: Codes are append-only: never reuse, renumber or rename; deprecate by comment, keep the entry.
+- MUST: Messages are generic, safe, human-readable and **never** parsed by clients or code.
+- MUST: Group entries and comment the scheme/ranges at the top; document reserved ranges in comments.
+- VERIFIED: Reference service A groups by HTTP category with reserved ranges; reference service B groups by `MM` source-file with a header table (C-01). Follow the target's grouping.
+- MUST: Add a catalog test (see Testing) that fails on duplicate numeric codes, malformed codes, and status/category mismatches (GENERIC addition; present partially in `error-catalog.test.ts` of the enforcement repo).
+impl:
+- Open the target's catalog; find the banding/MM rules in its header comment.
+- Pick the next free sequence in the right band/module; add the entry; write the test assertion.
+- Throw with safe `details` only.
+- Update OpenAPI error responses and docs.
+ex: ts | Catalog entry and helper (reference shape)
+export const ErrorCatalog = {
+  // 1xxx: Validation (400)
+  VALIDATION_FAILED: { numericCode: makeErrorCode(SS, MM, 3), httpStatus: 400, message: "Request validation failed" },
+  CLIENT_CONFIG_NOT_FOUND: { numericCode: makeErrorCode(SS, MM, 13), httpStatus: 404, message: "Client configuration not found" },
+  UNHANDLED_ERROR: { numericCode: makeErrorCode(SS, MM, 51), httpStatus: 500, message: "An unhandled error occurred" },
+} as const;
+export type ErrorCodeKey = keyof typeof ErrorCatalog;
+export function throwServiceError(key: ErrorCodeKey, details?: unknown): never {
+  const e = ErrorCatalog[key];
+  throw new AppError(e.httpStatus, key, e.numericCode, e.message, details);
+}
+/ex
+fail:
+- Unknown thrown values are wrapped as `UNHANDLED_ERROR` at the boundary (`exception-to-error-mapping`).
+sec:
+- Messages must not reveal existence of resources to unauthorized callers where that matters; no stack/driver text.
+test:
+- Catalog test: all `numericCode` unique, match `/^1\d{7}$/`, status within allowed set; each key referenced in code exists.
+anti:
+- Second catalog or enum for the same service.
+- `code` derived from message text.
+- Renumbering existing entries.
+- Using error codes of another service.
+check:
+- Entry appended; unique; helper used; test updated; docs updated.
+
+@@ error-code-standards | Error Code Standards
+ev: E1
+cls: MANDATED (task + ADR-004); MM policy UNRESOLVED (C-01)
+std: ERR-03, ERR-04
+rel: error-catalog-management, exception-to-error-mapping, api-error-response, breaking-change-review, api-compatibility-review
+d: Use when constructing, validating or reviewing numeric error codes - PLATFORM_CODE + SERVICE_CODE + MODULE_NUM + sequence (001...) - choosing module numbers and sequences, registering a service number, or detecting duplicates and legacy code schemes.
+scope: Error-code composition, registry and uniqueness rules.
+app: All services; a small local `makeErrorCode` helper in each service's error module.
+purpose: Greppable, stable, service-encoded codes that never collide across the platform.
+when:
+- Creating the first catalog of a new service.
+- Adding a module/area to a catalog.
+- Reviewing code that builds codes by hand or uses `50xxx` / `INXT50xxx`.
+org:
+- MUST: `numericCode = PLATFORM_CODE + SERVICE_CODE + MODULE_NUM + SEQ` as an **8-character string**: `PLATFORM_CODE` = `1` (always, 1 digit); `SERVICE_CODE` = 2 digits, zero-padded, registered per service in the organization's service-code registry (observed: config 02, enforcement 03, ingestion 04, rollup 05, portal 06 - registry owner/location to be confirmed); `MODULE_NUM` = 2 digits, zero-padded; `SEQ` = 3 digits starting `001`, zero-padded. Example `makeErrorCode(3, 0, 1) -> "10300001"`.
+- MUST: Human-readable service prefix (when needed in a code string) is `"INXT1" + SS` (for example `INXT103`).
+- MUST: New services register a **new** `SERVICE_CODE` in the service-code registry; never reuse another service's.
+- MUST: Uniqueness is per `(SERVICE_CODE, MODULE_NUM, SEQ)`; a number is never reused or changed once released; duplicates are prevented by a catalog test and code review.
+- MUST: `SERVICE_CODE` is a single constant imported by the catalog and the logger configuration (reference defect: `"02"` in the catalog vs `"102"` in logger bootstrap); do not read it from env with literal fallbacks.
+- VERIFIED: Sequence banding (service-registry convention + config catalog): 001-010 validation(400) · 011 authentication(401) · 012 authorization(403) · 013-022 not found(404) · 023-034 infrastructure(500) · 035-048 business logic · 049-050 external dependency(502/503) · 051-052 catch-all(500).
+- UNRESOLVED (C-01): `MODULE_NUM` policy - reference service A fixes `00` and uses banding; reference service B uses `MM` = source file/area (01..07) with per-file sequences and no banding. Follow the target repo's policy; do not change codes already shipped; propose (do not decide) a functional-module policy.
+- MUST NOT extend legacy schemes: `error-codes.ts` (`50` + HTTP status, e.g. `50404`) and vendored `HttpError` (`INXT50` + HTTP status) - they are legacy (C-01).
+impl:
+- Read the target catalog header for its MM/banding rules and the service registry for `SERVICE_CODE`.
+- Compute the code with the local helper `makeErrorCode(ss, mm, seq)` = `"1" + pad2(ss) + pad2(mm) + pad3(seq)`; never concatenate by hand elsewhere.
+- Add a test that asserts format `^1\d{2}\d{2}\d{3}$` and uniqueness.
+ex: ts | Construction and validation
+const code = makeErrorCode(3, 4, 2);                 // "10304002" -> platform 1, service 03, module 04, seq 002
+export const makeErrorCode = (ss: number, mm: number, seq: number) =>
+  "1" + String(ss).padStart(2, "0") + String(mm).padStart(2, "0") + String(seq).padStart(3, "0");
+it("codes are unique and well-formed", () => {
+  const nums = Object.values(EC).map((e) => e.num);
+  expect(new Set(nums).size).toBe(nums.length);
+  nums.forEach((n) => expect(n).toMatch(/^1\d{2}\d{2}\d{3}$/));
+});
+/ex
+fail:
+- A duplicate code is a build failure (test), not a runtime concern.
+test:
+- Format, uniqueness, banding (if used), status/category consistency.
+anti:
+- Hand-concatenating with `||` fallbacks.
+- Different `SERVICE_CODE` in logger vs catalog.
+- Reusing a retired number.
+- Inventing a new code format.
+check:
+- 8 digits; unique; constant `SERVICE_CODE`; test; no legacy scheme used.
+
+@@ exception-handling | Exception Handling
+ev: E1
+cls: VERIFIED (ERR-01, ERR-08)
+std: ERR-01, ERR-02, ERR-05, ERR-08
+rel: error-catalog-management, global-exception-handling, error-propagation, business-exception-handling, technical-exception-handling, error-logging
+d: Use when writing try/catch, throwing errors, or reviewing how a function reports failure. Defines where to catch, where to throw catalogued AppErrors, and the controller idiom that forwards failures to the global handler.
+scope: In-code exception handling rules.
+app: TypeScript/Node.
+purpose: One consistent way to raise and forward failures.
+when:
+- Writing any I/O, parsing or business-rule code.
+- Reviewing swallow-and-continue catches.
+org:
+- MUST: Expected failures throw catalogued `AppError`s; unexpected failures propagate and are wrapped once at the boundary (`toAppError`).
+- MUST: Controllers: `try { ... } catch (err) { next(toAppError(err)); }` (or an `asyncHandler` wrapper); no response writing in catch blocks.
+- MUST: Catch only to (a) add safe context, (b) translate a known error, (c) implement a documented fail-open/degrade policy, (d) clean up in `finally`. Re-throw otherwise.
+- MUST: A deliberate swallow (best-effort notification, cache) logs at `warn`/`error` with context and the serialized error, and states why in a comment.
+- VERIFIED: Fire-and-forget calls use `void fn().catch(logError)` so rejections never become unhandled.
+impl:
+- For each external call decide: confirmed-absent (`null`), unavailable (typed throw), or best-effort (log and continue).
+- Throw with the most specific catalog entry.
+ex: ts | Best-effort side effect (reference pattern)
+void notifyDownstream(params).catch((err) =>
+  logger.error({ subscriptionId: params.subscriptionId, err: serializeError(err) }, "Unhandled downstream notification error"));
+/ex
+fail:
+- An unhandled rejection is a fatal bug (`fatal-error-process-policy`).
+test:
+- Each catch has a test proving the translation/swallow decision.
+anti:
+- `catch (e) {}`.
+- `throw new Error("not found")` for expected conditions.
+- Catching and returning `{ success:false }` objects instead of throwing.
+check:
+- No empty catches; catalogued throws; controller idiom.
+
+@@ global-exception-handling | Global Exception Handling
+ev: E1
+cls: MANDATED envelope (ARCH-LLD-003) + VERIFIED middleware
+std: ERR-05, ERR-06, ERR-07, API-03, ARCH-05
+rel: error-catalog-management, exception-to-error-mapping, error-logging, api-error-response, middleware-request-pipeline
+d: Use when creating or changing the Express error middleware, the unhandled-error path, or when an error response bypasses the standard envelope. Defines the single global handler per API surface.
+scope: The one place that converts errors into HTTP responses and log lines.
+app: Express with `@inextlabs/platform-errors` and `@inextlabs/logger`.
+purpose: No error reaches a client except through one formatter; every error is logged once with correlation.
+when:
+- New API surface or version.
+- CORS/auth/rate-limit rejections returning custom bodies.
+org:
+- MUST: Exactly one error middleware per API surface, mounted **after** all routes (and after the correlation middleware's scope).
+- MUST: Derive `correlationId = req.correlationId ?? getCorrelationId() ?? "unknown"`; map to `AppError` (`toAppError`; typed errors such as `CorsRejectedError` are mapped **by type**, not by message); log once; respond `res.status(appError.statusCode).json({ success: false, ...formatError(appError, correlationId) })`.
+- MUST: Log `warn` for status < 500 and `error` for >= 500 with route metadata (`correlationId`, `method`, `route`), `statusCode`, `code`, `details`, and `err: serializeError(original)`; never body, params or query.
+- MUST: Response never contains stack, driver messages or connection strings; `details` public-safe only.
+- MUST: Include `asyncHandler` or equivalent so async route rejections reach the middleware (Express 4 does not).
+impl:
+- Create/locate the middleware; make it the last `app.use` for its path prefix.
+- Add type-based branches for framework/typed errors.
+- Test it with thrown AppError, thrown Error, thrown string.
+ex: ts | Error middleware (reference, condensed)
+export function errorMiddleware(err: unknown, req: Request, res: Response, _next: NextFunction) {
+  const correlationId = req.correlationId ?? getCorrelationId() ?? "unknown";
+  const appError = err instanceof CorsRejectedError ? corsAppError() : toAppError(err);
+  const meta = { correlationId, method: req.method, route: req.route?.path ?? req.originalUrl.split("?")[0],
+                 statusCode: appError.statusCode, code: appError.code, details: appError.details, err: serializeError(err instanceof Error ? err : new Error(String(err))) };
+  appError.statusCode >= 500 ? logger.error(meta, "Unhandled error: " + appError.message) : logger.warn(meta, "AppError: " + appError.message);
+  return res.status(appError.statusCode).json({ success: false, ...formatError(appError, correlationId) });
+}
+/ex
+fail:
+- The middleware must never throw; guard serialization failures and fall back to a minimal catalog 500.
+sec:
+- Never reveal whether a resource exists to unauthorized callers (use consistent 404/403 policy per service).
+test:
+- AppError, generic Error (-> `UNHANDLED_ERROR`, no details), string throw, CORS error, async handler rejection.
+anti:
+- Multiple formatters.
+- `res.send(err.message)`.
+- Calling `formatError(err)` on a raw error (yields `UNKNOWN_ERROR`/`"0"`).
+check:
+- One middleware, last; wraps strays; logs once; envelope exact.
+
+@@ exception-to-error-mapping | Exception-to-Error Mapping
+ev: E2
+cls: VERIFIED (ERR-05, ERR-09)
+std: ERR-05, ERR-09, ERR-02
+rel: error-catalog-management, integration-error-handling, technical-exception-handling, global-exception-handling, api-error-response
+d: Use when translating third-party, driver, SDK, HTTP-client or framework exceptions into catalogued AppErrors - including keeping the original on Error.cause for logs only and mapping confirmed-absent vs unavailable.
+scope: Boundary translation of foreign exceptions.
+app: TypeScript/Node.
+purpose: Foreign errors never reach clients directly and are always classifiable.
+when:
+- Calling Mongo, Redis, HTTP, Service Bus, SDKs.
+- Writing a repository or integration module.
+org:
+- MUST: Provide `toAppError(err)`: `AppError` passes through; anything else becomes `UNHANDLED_ERROR` with `details` **undefined** and the original assigned to `Error.cause` (and its stack preserved) for the logger only.
+- MUST: Integration modules translate known statuses explicitly (404 -> `null` or `*_NOT_FOUND`; 4xx -> specific catalog entry; 5xx/timeout/network -> `*_UNAVAILABLE` / upstream error).
+- MUST: Typed error classes for dependency failures (`ConfigServiceUnavailableError(message, status)`, `UsageReadError(message, context)`) carry structured context and are mapped to catalog entries at the edge.
+- VERIFIED: Use `serializeError` from `@inextlabs/logger` for log lines; it walks `cause`.
+impl:
+- In each integration, wrap SDK calls; map by status/type, not message.
+- Keep one `toAppError` per service.
+ex: ts | toAppError (reference)
+export function toAppError(err: unknown): AppError {
+  if (err instanceof AppError) return err;
+  const e = ErrorCatalog.UNHANDLED_ERROR;
+  const appError = new AppError(e.httpStatus, "UNHANDLED_ERROR", e.numericCode, e.message, undefined);
+  (appError as unknown as { cause: unknown }).cause = err;       // logs only
+  if (err instanceof Error && err.stack) appError.stack = err.stack;
+  return appError;
+}
+/ex
+fail:
+- Mapping must never throw; default to `UNHANDLED_ERROR`.
+sec:
+- `cause` and stack must not be serialized into responses.
+test:
+- Mongo/axios/SDK errors -> expected catalog key; `details` undefined; cause preserved.
+anti:
+- `details: err.message`.
+- Message-substring matching.
+check:
+- Typed mapping; cause kept; no leakage.
+
+@@ business-exception-handling | Business Exception Handling
+ev: E2
+cls: VERIFIED (ERR-02) + defects noted
+std: ERR-02, API-10
+rel: error-catalog-management, http-status-codes, exception-handling, api-error-response
+d: Use when a valid request violates a business rule or resource state (not found, conflict, quota exceeded, inactive subscription, forbidden for tenant). Models these as catalogued 4xx errors with actionable safe details.
+scope: Expected domain failures.
+app: Any service.
+purpose: Callers can act on business failures; they are never reported as 500.
+when:
+- Implementing domain rules.
+- Reviewing 500s that are really caller-fixable.
+org:
+- MUST: Business errors have their own catalog entries with 4xx statuses (404 absent, 403 not allowed, 409 conflict, 412 version conflict, **429 quota exceeded** with `Retry-After` hint in `details`).
+- MUST: Include only safe, actionable `details` (`[{ field, reason }]` or identifiers the caller already supplied).
+- VERIFIED: Subscription inactive vs not found are different entries; "quota exceeded" is returned as a business error, while record-only mode records and does not block (policy in config, `fail-open-fail-closed-policy`).
+- MUST NOT: map business conditions to 500 (reference defect: `BOT_INFO_NOT_FOUND`, `RUNTIME_FIELD_MISSING` -> 500).
+impl:
+- Name entries for the rule, not the code location (`USAGE_LIMIT_EXCEEDED`).
+- Throw in the service where the rule is evaluated.
+ex: ts | Quota exceeded
+if (used + delta > limit) throw appErr(EC.USAGE_LIMIT_EXCEEDED, [{ field: "retryAfter", reason: String(secondsUntilReset) }]);
+/ex
+fail:
+- Business error logging is `warn` (expected), not `error`.
+test:
+- Rule boundary tests (at limit, above, zero limit, unlimited).
+anti:
+- Throwing `Error` for rule violations.
+- Returning 200 with `allowed:false` where the contract requires an error (follow the contract).
+check:
+- 4xx; catalogued; safe details; warn-level log.
+
+@@ technical-exception-handling | Technical Exception Handling
+ev: E2
+cls: VERIFIED (ERR-09, RES-01)
+std: ERR-09, RES-01, INT-02, ERR-05
+rel: exception-to-error-mapping, dependency-failure-handling, integration-error-handling, fail-open-fail-closed-policy, circuit-breaker
+d: Use when infrastructure or dependency failures occur - Redis, Mongo, broker, upstream HTTP, token acquisition, timeouts. Classifies them as unavailable (503/502/504), applies the documented fail-open or fail-closed policy and logs with context.
+scope: Non-business, system-level failures.
+app: Any service.
+purpose: Dependency trouble degrades predictably and is diagnosable.
+when:
+- Writing code around a datastore, cache, broker or upstream.
+org:
+- MUST: Technical failures map to catalog infrastructure/external entries (500/502/503/504), never leak driver text, and are logged at `error` with dependency name, operation and context (never secrets).
+- MUST: Distinguish "confirmed absent" (`null`/404) from "unavailable" (typed throw); callers never treat unavailable as empty (ERR-09).
+- MUST: Optional dependencies (cache, notifications, non-mandatory broker) fail open and log `warn`; correctness-critical dependencies (quota counters, idempotency store, subscription for blocking mode) fail closed per `fail-open-fail-closed-policy`.
+- VERIFIED: Request-level timeout on write path returns 504 and releases idempotency keys; never records `allowed: true` under the key on timeout.
+impl:
+- Wrap the call; map by error type; apply policy; log with hints (what to check).
+ex: ts | Typed unavailable error (reference)
+export class DependencyUnavailableError extends Error {
+  constructor(message: string, public readonly status?: number) { super(message); this.name = "DependencyUnavailableError"; Object.setPrototypeOf(this, DependencyUnavailableError.prototype); }
+}
+/ex
+fail:
+- After mapping, the handler produces the standard error envelope.
+test:
+- Simulate timeout, 5xx, connection refused; assert status, code, logs, no secret.
+anti:
+- Retrying without bounds.
+- Returning `[]`/`null` on outage for blocking decisions.
+check:
+- Classification; policy; logging; tests.
+
+@@ error-logging | Error Logging
+ev: E2
+cls: MANDATED logger (OBS-01) + VERIFIED content rules
+std: OBS-01, OBS-02, OBS-03, ERR-06, ERR-07
+rel: structured-logging, global-exception-handling, sensitive-data-masking-in-logs, log-level-standards, correlation-id-management
+d: Use when logging errors - which level, which fields, how to attach the Error object (err key / serializeError), avoiding double logging, and never logging bodies or secrets on the error path.
+scope: Error log content and level.
+app: Services using `@inextlabs/logger`.
+purpose: Errors are searchable, correlated and safe.
+when:
+- Writing catch blocks or the error middleware.
+org:
+- MUST: Use `@inextlabs/logger` (via the service wrapper) - `logger.error(err, "message")` or `logger.error({ ...context, err: serializeError(err) }, "message")` (Pino order: object first).
+- MUST: Level by impact: `error` for 5xx/unexpected, `warn` for 4xx/degraded/best-effort failures, `fatal` for process-ending.
+- MUST: Log once per failure (middleware logs; lower layers add context only when they swallow).
+- MUST: Context fields: `correlationId` (automatic), route/method, dependency name, ids; no request body/params/query; no tokens/keys/connection strings (use masked helpers).
+- MUST: Include a short `hint` for operational failures when known (reference practice: "Check REDIS_ACCESS_KEY...").
+impl:
+- Replace `console.error` with the logger; replace `(msg, meta)` with `(meta, msg)` in new code.
+ex: ts | Good error logs
+logger.error({ dependency: "redis", op: "SET", key: maskedKey, err: serializeError(err) }, "Redis operation failed");
+logger.warn({ subscriptionId, status, err: serializeError(err) }, "Downstream notification failed - will be retried by outbox");
+/ex
+fail:
+- Logging must not throw; the logger wrapper guards serialization.
+test:
+- Mock the logger (`mocking-test-doubles`) and assert level and `err`.
+anti:
+- Logging then rethrowing at every layer.
+- Logging full payloads.
+- `console.*`.
+check:
+- Pino order; level; no leakage; single log.
+
+@@ error-propagation | Error Propagation
+ev: E2
+cls: VERIFIED (ERR-07, ERR-08, ERR-09)
+std: ERR-07, ERR-08, ERR-09, CTX-01, INT-01
+rel: exception-handling, global-exception-handling, integration-error-handling, dependency-failure-handling, correlation-id-management
+d: Use when deciding how a failure moves across layers and services - throw vs return, what is returned upstream when a downstream call fails, how correlation travels with the failure, and background-job failure handling.
+scope: Failure flow from origin to client/operator.
+app: Services and workers.
+purpose: A failure keeps its identity and safe context from origin to response, without leaking causes.
+when:
+- Adding a layer or integration.
+- Handling downstream HTTP failures.
+org:
+- MUST: Within a service failures propagate by **throwing** catalogued errors; "result objects" are used only where the contract defines them (`null` = confirmed absence; `{ status: "new"|"duplicate"|... }` acquisition results).
+- MUST: A downstream failure that blocks the operation is translated at the integration boundary (typed unavailable error) and mapped to 502/503/504; the upstream response carries this service's own code, not the downstream's raw body.
+- MUST: Downstream error codes may be logged (`errorSource`) but are not forwarded as this service's codes.
+- MUST: Background workers never let a failure kill the loop: per-batch try/catch, log, mark the item failed with attempts and `lastError`, continue.
+- VERIFIED: Best-effort calls swallow and log; durable calls use the outbox (`outbox-pattern`).
+impl:
+- Draw the failure path; check each layer adds nothing leaky.
+ex: text | Propagation
+repo throws DependencyUnavailableError -> service lets it pass -> controller next(toAppError) -> error middleware -> 503 CONFIG_SERVICE_UNAVAILABLE envelope + log with cause
+/ex
+fail:
+- Do not retry inside a request path without a budget.
+test:
+- Integration test with the dependency down.
+anti:
+- Forwarding upstream response bodies.
+- Using exceptions for normal control flow (absence).
+check:
+- Contract for absent vs unavailable; mapping at boundary; workers resilient.

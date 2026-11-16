@@ -1,0 +1,277 @@
+@@ correlation-id-management | Correlation ID Management
+ev: E1
+cls: MANDATED (ADR defaults) + VERIFIED implementation; deviation C-08
+std: CTX-01, CTX-02, API-04, OBS-01
+rel: request-context-propagation, structured-logging, request-header-management, distributed-request-tracking, trace-context-propagation, api-error-response
+d: Use when adding or reviewing request tracing - accepting or generating the x-correlation-id at the edge, binding it to async context, echoing it in responses/errors/logs, and propagating it over HTTP and messages. Applies the organization's ADR defaults and flags the reference implementations' known gaps.
+scope: Generation, validation, propagation and use of the correlation ID.
+app: HTTP services and message flows; Node implementation with AsyncLocalStorage.
+purpose: One ID follows a business request across services, logs, errors and async work.
+when:
+- Creating middleware or a new service.
+- Making outbound HTTP calls or publishing messages.
+- Debugging missing/unlinked logs.
+org:
+- MUST: Header is `x-correlation-id` (case-insensitive). Resolve-or-generate (`randomUUID()`) **before** auth and error handling; bind to `AsyncLocalStorage`; echo it as a response header, in every envelope `metadata.correlationId`, in every log line, on every outbound call and in message `applicationProperties.correlationId`. Never fatal when missing (`"unknown"`).
+- MUST (ADR default): Public/untrusted callers' values are ignored and regenerated; a supplied value is kept only from a trusted internal caller; accepted IDs are validated (strict charset, max length); invalid ones are regenerated (no 400); **no** `x-request-id` fallback; the body/query can never set it; correlation, request ID and trace ID are three different identifiers.
+- UNRESOLVED (C-08): Both reference implementations accept any non-empty inbound value and fall back to `x-request-id`, validate nothing, and have no trusted-caller mechanism. For new or modified code implement the ADR default if a trust mechanism is available; otherwise keep existing behaviour, add the validation (charset/length), and report the gap. Never widen acceptance.
+- MUST: Exactly one correlation mechanism per service; do not run a parallel request-id system (reference defect `requestTelemetry.middleware`).
+- MUST: Implement correlation helpers (`getOrCreateCorrelationId`, `runWithCorrelationId`, `getCorrelationId`) once in the service's shared-infra zone and reuse them everywhere (no duplicate copies, C-08).
+impl:
+- Mount the correlation middleware at the top of each router (before auth).
+- Read `getCorrelationId()` in the logger wrapper, error middleware, outbound client builders and message producers.
+- Validate inbound IDs against `^[A-Za-z0-9._:-]{8,128}$` (or the repo's rule) and regenerate otherwise.
+- Wrap handlers mounted outside routers with `withCorrelationId`.
+ex: ts | Middleware with validation (extends the reference with the ADR validation rule)
+const ID_RE = /^[A-Za-z0-9._:-]{8,128}$/;
+export function correlationIdMiddleware(req: Request, res: Response, next: NextFunction) {
+  const raw = req.headers["x-correlation-id"];
+  const supplied = (Array.isArray(raw) ? raw[0] : raw)?.trim();
+  const id = supplied && ID_RE.test(supplied) && isTrustedCaller(req) ? supplied : randomUUID();
+  req.correlationId = id;
+  res.setHeader("x-correlation-id", id);
+  runWithCorrelationId(id, () => next());
+}
+/ex
+fail:
+- Missing/invalid ID never fails the request; missing context yields `"unknown"` in envelopes and logs.
+sec:
+- Treat the header as untrusted input (log injection, cardinality); never reflect unvalidated values.
+test:
+- Untrusted valid ID regenerated; trusted valid kept; trusted invalid regenerated; body field ignored; ID present on 401/500 responses; present on outbound call.
+anti:
+- Trusting any caller's ID.
+- `x-request-id` fallback.
+- Passing the ID manually through every function signature.
+- Reading from body.
+check:
+- Middleware before auth; ALS bound; header/envelope/log/outbound/message propagation; validation; tests.
+
+@@ request-context-propagation | Request Context Propagation
+ev: E2
+cls: VERIFIED (CTX-01, CTX-02)
+std: CTX-01, CTX-02, OBS-02
+rel: correlation-id-management, distributed-request-tracking, structured-logging, http-client-management, message-producer
+d: Use when request-scoped data (correlation ID, principal, tenant) must be available to services, repositories, loggers and outbound calls without parameter threading, including background jobs and callbacks that lose async context.
+scope: Async-context storage and propagation inside and across processes.
+app: Node.js (`AsyncLocalStorage`); the contract applies to any runtime.
+purpose: Makes context ambient and safe, and keeps one store per concern.
+when:
+- Reading the correlation ID in a service/repo/logger.
+- Starting background work from a request.
+- Adding an EventEmitter/callback boundary.
+org:
+- MUST: One `AsyncLocalStorage` per service for correlation (`runWithCorrelationId` / `getCorrelationId`); do not create a second store for the same data (C-08).
+- MUST: Background jobs generate and bind their own ID (`job:<id>` or UUID) with `runWithCorrelationId`.
+- VERIFIED: Telemetry keeps a separate store for request telemetry context (method/path/body-masked); it must not duplicate correlation.
+- MUST: Outbound calls and messages read the ambient ID (CTX-02).
+impl:
+- Wrap entry points (HTTP, worker tick, queue message) with `runWithCorrelationId`.
+- Do not store request/response objects in the store; store primitives.
+- Re-bind explicitly at `EventEmitter` boundaries.
+ex: ts | Worker tick with its own context
+async function tick() {
+  await runWithCorrelationId("outbox-" + randomUUID(), async () => { await processBatch(); });
+}
+/ex
+fail:
+- Lost context yields `undefined`; helpers return `unknown`, never throw.
+test:
+- Context visible after `await`, `setTimeout`, promise chains; absent outside `run`.
+anti:
+- Global mutable "currentRequest".
+- Parallel ALS stores.
+check:
+- One store; entry points bound; outbound reads ambient ID.
+
+@@ idempotency-management | Idempotency Management
+ev: E2
+cls: MANDATED (ADR defaults) / implementation UNRESOLVED (C-07)
+std: CTX-03, CTX-04, API-10, RES-02
+rel: request-deduplication, message-idempotency, usage-event-identity, api-request-structure, api-error-response, distributed-locking
+d: Use when building or reviewing retryable write operations - Idempotency-Key header, scope, canonical request fingerprint, atomic claim, in-progress handling, replay, conflict, release on failure, retention and fail-open/closed policy. Applies the organization's ADR defaults and documents the reference Redis implementation's deviations.
+scope: Idempotent API write operations and their stores.
+app: HTTP write APIs; Redis (reference) or relational store (ADR default).
+purpose: Safe client retries without double effects.
+when:
+- Adding a write endpoint that clients may retry.
+- Reviewing idempotency handling in payments/usage/order-like flows.
+org:
+- MUST (ADR default): `Idempotency-Key` HTTP header is the only key source (no body fallback); mandatory on externally exposed writes - missing/invalid key -> 400; validated format and length.
+- MUST: Key scope = authenticated tenant + operation + key. Fingerprint = SHA-256 of canonical JSON (sorted keys).
+- MUST: Atomic claim (insert-if-absent / `SET NX`); on duplicate: completed -> replay the stored response; same key + different fingerprint -> **409 `IDEMPOTENCY_KEY_REUSED`**; still running -> wait at most 1 s then **409 `IDEMPOTENCY_IN_PROGRESS`** with `Retry-After`.
+- MUST: Transient failures **release** the claim; the result is stored only after the operation is verified; a timed-out write releases the key and returns 504.
+- MUST: Effect-level dedupe (deterministic event IDs, `usage-event-identity`) in addition, even when the store is healthy.
+- MUST: Store outage on writes fails **closed** (503 + `Retry-After`); fail open only per operation with written approval naming the downstream dedupe.
+- MUST: Retention 72 h standard; 7 days or more for financial/high-value; always longer than the client retry window.
+- UNRESOLVED (C-07): Reference implementation uses a Redis store (`SET key EX ttl NX`, Lua compare-and-swap takeover), also reads a body key, and names conflicts `IDEMPOTENCY_KEY_CONFLICT` / `IDEMPOTENCY_REQUEST_IN_PROGRESS`; fail-open answers are replayed for 30 s / max 3 replays. ADR default prefers a relational store with a unique constraint. Follow the target repo's existing store; for **new** services use the ADR default or request approval for Redis; always use the ADR error codes in new code or add aliases.
+impl:
+- Resolve key from the header; validate; compute fingerprint over the validated body.
+- Acquire: `new` -> process; `duplicate` -> replay stored summary; `in_progress` -> bounded wait/409; `conflict` -> 409.
+- On success store `{bodyHash, resultSummary, recordedAt}`; on failure release.
+- Add TTL/retention config per operation and a cleanup/expiry mechanism.
+ex: ts | Claim with fingerprint (reference pattern, Redis)
+const ok = await redis.set(key, JSON.stringify(record), "EX", ttlSeconds, "NX");
+if (ok === "OK") return { status: "new" };
+const existing = JSON.parse((await redis.get(key)) ?? "null");
+if (existing && existing.bodyHash !== bodyHash) return { status: "conflict" };      // -> 409 IDEMPOTENCY_KEY_REUSED
+return existing?.resultSummary === undefined ? { status: "in_progress" } : { status: "duplicate", resultSummary: existing.resultSummary };
+/ex
+fail:
+- Store errors are surfaced (503), logged and alerted; never swallowed.
+- Fail-open answers are marked and replayed only briefly and a bounded number of times.
+sec:
+- Key scoped by tenant so keys cannot collide across tenants; fingerprint excludes secrets from logs.
+test:
+- New, duplicate (replay), conflict, in-progress, timeout releases key, store outage 503, tenant isolation, concurrent duplicates.
+anti:
+- Key from body.
+- Storing success before verification.
+- Cache-only store with eviction and no effect-level dedupe.
+- Global (unscoped) keys.
+check:
+- Header-only key; scope; fingerprint; atomic claim; 409 codes; release on failure; retention; effect-level dedupe; outage policy.
+
+@@ request-deduplication | Request Deduplication
+ev: E2
+cls: VERIFIED (CTX-03, CTX-04, MSG-05)
+std: CTX-03, CTX-04, MSG-05
+rel: idempotency-management, message-deduplication, usage-event-identity, webhook-delivery, outbox-pattern
+d: Use when duplicate requests or deliveries (client retries, webhook redelivery, at-least-once queues, replays) must not repeat side effects, and the operation is not covered by an Idempotency-Key header - threshold alert de-duplication, webhook delivery dedupe, fact-level event IDs.
+scope: Duplicate detection outside the idempotency-key mechanism.
+app: Services with webhooks/queues/derived events.
+purpose: Pick the right dedupe layer and key.
+when:
+- Handling webhooks or queue messages.
+- Emitting derived events (alerts, notifications).
+org:
+- MUST: Choose the layer: request-level (`idempotency-management`), message-level (`message-deduplication`), effect-level deterministic IDs (`usage-event-identity`). Effect-level dedupe is mandatory for durable events.
+- VERIFIED: Domain dedupe helpers exist and are unit-tested (`threshold-dedup`, `webhook-idempotency`, `fact-dedupe`); they derive keys from stable business identity (tenant, product, metric, period, threshold) and store with TTL.
+- VERIFIED: Inbound webhook (reference) uses the provider event ID with an upsert-by-event-ID record where available; the reference marks this as latent in one service (documented gap).
+- GENERIC: Retain dedupe records at least as long as the sender's maximum retry/replay window.
+impl:
+- Define the dedupe key from immutable business identity, not timestamps.
+- Use an atomic set-if-absent (`SET NX EX`) or unique index insert.
+- Treat "already seen" as success (idempotent response), not an error.
+ex: ts | Threshold alert dedupe key (pattern)
+const key = ["alert", clientId, productLine, metricKey, periodKey, threshold].join(":");
+const first = await redis.set(key, "1", "EX", ttlSeconds, "NX");
+if (first !== "OK") return { skipped: true };
+/ex
+fail:
+- If the dedupe store is unavailable decide per effect: skipping risks a missed alert; sending risks a duplicate - document the choice (`fail-open-fail-closed-policy`).
+test:
+- First vs duplicate; TTL expiry; concurrent duplicates.
+anti:
+- Time-based keys.
+- Raising errors on duplicates.
+check:
+- Stable identity key; atomic store; TTL; outage policy documented.
+
+@@ distributed-request-tracking | Distributed Request Tracking
+ev: E2
+cls: VERIFIED (CTX-01, CTX-05)
+std: CTX-01, CTX-05, OBS-05, CTX-02
+rel: correlation-id-management, trace-context-propagation, distributed-tracing, structured-logging, application-monitoring
+d: Use when following one business operation across services, queues and workers - ensuring the correlation ID reaches every hop, appears in logs and messages, and is searchable; includes how to diagnose gaps.
+scope: End-to-end traceability design and diagnosis.
+app: Multi-service flows.
+purpose: A support engineer can reconstruct a request across all services from one ID.
+when:
+- Designing a flow that crosses services/queues.
+- Investigating a cross-service incident.
+org:
+- MUST: Every hop propagates `x-correlation-id` (HTTP) or `applicationProperties.correlationId` (Service Bus) / the job payload field (queue); consumers rebind it with `runWithCorrelationId`.
+- MUST: Logs include `correlationId` automatically (logger wrapper) so a single search spans services.
+- VERIFIED: The usage event payload carries `correlationId` and `usageEventId` end to end; outbox rows keep the payload including the ID.
+- GENERIC: Add the trace ID next to the correlation ID in logs once distributed tracing is enabled (`trace-context-propagation`).
+impl:
+- Draw the hop list; for each, name how the ID enters and leaves.
+- Add the ID to queue job payloads.
+- Verify with a test that publishes and consumes.
+ex: ts | Message carrying correlation
+await sender.sendMessages({ body, messageId: eventId,
+  applicationProperties: { correlationId: getCorrelationId(), productLine, clientId } });
+/ex
+fail:
+- Missing upstream ID: generate and log "correlation generated at <hop>" at debug, continue.
+test:
+- Publish->consume test asserts same ID in consumer logs.
+anti:
+- Generating a new ID mid-flow.
+- Different header names per hop.
+check:
+- Hop table; propagation tests.
+
+@@ trace-context-propagation | Trace Context Propagation
+ev: E2
+cls: TECH / UNRESOLVED (C-10)
+std: CTX-05, OBS-05
+rel: distributed-tracing, opentelemetry-integration, correlation-id-management, application-monitoring
+d: Use when propagating W3C trace context (traceparent/tracestate) across services and async hops and when choosing the APM stack. Documents both reference approaches (Application Insights SDK with W3C vs OpenTelemetry init) and keeps correlation ID and trace ID separate.
+scope: Distributed trace context.
+app: Node services with Application Insights or OpenTelemetry.
+purpose: Trace IDs flow through standard instrumentation, not hand-rolled headers.
+when:
+- Enabling tracing.
+- Adding a new outbound protocol.
+org:
+- MUST: Trace ID is separate from the correlation ID; propagate trace context via the standard instrumentation (W3C `traceparent`), not hand-rolled.
+- TECH (reference service A): `applicationinsights` SDK, W3C mode (`AI_AND_W3C`), `trackTrace/Exception/Request`, mask-before-export, no-op when `APPLICATIONINSIGHTS_CONNECTION_STRING` is unset.
+- TECH (reference service B): OpenTelemetry initialised once at startup before any logging (SDK wiring is per service; `OTEL_*` / `APPLICATIONINSIGHTS_CONNECTION_STRING` configuration).
+- UNRESOLVED (C-10): Estate APM choice not decided; follow the target repo; do not add a second APM.
+impl:
+- Initialize tracing first in bootstrap (before logger usage in OTEL case).
+- Log the active trace ID alongside `correlationId` when the logger supports it.
+- Do not mask-bypass: telemetry export must use the shared mask.
+ex: ts | OTEL init (reference)
+initTelemetry({ serviceName: "my-service", environment: process.env.NODE_ENV ?? "production" }); // service-local OTEL bootstrap, before any logger usage
+/ex
+fail:
+- Tracing must be a no-op when unconfigured; never throw into requests.
+test:
+- Disabled-config test: no exceptions.
+anti:
+- Custom trace header formats.
+- Two APM SDKs.
+check:
+- Init order; no-op safe; masked; trace/correlation separate.
+
+@@ usage-event-identity | Usage / Metered Event Identity
+ev: E2
+cls: VERIFIED (CTX-04)
+std: CTX-04, MSG-01, MSG-04
+add: Deterministic event IDs shared between producer and consumers between producer and consumers are a distinct organizational practice (effect-level dedupe) needed for any metering/event service and not listed in the predefined inventory.
+rel: idempotency-management, message-deduplication, message-idempotency, azure-service-bus-client, event-publishing, request-deduplication
+d: Use when emitting metered, audit or domain events that downstream services must count exactly once - building deterministic event IDs (entity, metric, discriminator, derived events) with local deterministic helpers and using them as message IDs and unique-index keys.
+scope: Event identity for effect-level deduplication.
+app: Services producing events consumed by other services; implemented as small local helpers.
+purpose: A replayed or retried publish of the same fact yields the same ID so consumers dedupe.
+when:
+- Publishing usage/metering/audit events.
+- Adding a derived event (for example credits derived from tokens).
+org:
+- MUST: Every published event carries `usageEventId` (or equivalent) set **before** publishing; callers that know the entity set it; otherwise derive deterministically (`withUsageEventId`).
+- MUST: Implement the ID helpers once in the service (pattern from the reference): `buildEventId({ entityType, entityId, metricKey, discriminator? })` -> `idem:<requestId>:<metric>`; `derivedEventId(parentId, "aiCredits")` -> `<parent>:d:aiCredits`; a deterministic fallback (messageId/jobId/idempotencyKey/requestId, else a hash of the full identity) for legacy events.
+- MUST: A bare entity ID is not unique (one request can emit several metrics); always include the metric key and, where an entity can repeat a metric, a stable discriminator.
+- MUST: Use the ID as the broker `messageId` (enables duplicate detection) and as the consumers' unique-index key within `{productLine, clientId}`.
+- VERIFIED: Producer carries `idempotencyKey`, `correlationId`, `subscriptionId`, `enforcementStatus` ("recorded"/"skipped") and `failOpenReason` for audit.
+impl:
+- Choose entityType (`idem`, `job`, ...) and entityId from the request.
+- Build the ID; attach it to the payload and `messageId`.
+- Derive IDs for secondary events from the parent ID.
+ex: ts | IDs
+const id = buildEventId({ entityType: "idem", entityId: idempotencyKey, metricKey: "llmInputTokens" });
+const credits = derivedEventId(id, "aiCredits");
+await sender.sendMessages({ body: payload, messageId: id, applicationProperties: { correlationId } });
+/ex
+fail:
+- Missing identity inputs -> fall back to the deterministic hash; never publish without an ID.
+test:
+- Same inputs -> same ID; different metric/discriminator -> different ID; derived ID stable; replay yields identical message ID.
+anti:
+- Random UUID per publish attempt.
+- Timestamps in IDs.
+- Entity-only IDs.
+check:
+- Set before publish; local deterministic helpers; unique-index agreement with consumer.

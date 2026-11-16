@@ -1,0 +1,37 @@
+# Additional Skills Discovered (Deliverable 4)
+
+Skills beyond the 176 predefined, each justified by repository evidence. No new category was needed.
+
+| # | Skill | Category | Evidence | Reason / why reusable |
+|---|---|---|---|---|
+| 1 | [`internal-package-management`](../categories/01-microservice-architecture-foundations/internal-package-management/SKILL.md) | 01 Microservice Architecture & Foundations | E1 | Every service depends on `@inextlabs/*` packages from GitHub Packages; correct registry/token/version handling is required for builds, Docker and CI and is not covered by any predefined skill. |
+| 2 | [`deprecation-sunset-management`](../categories/02-api-development-design/deprecation-sunset-management/SKILL.md) | 02 API Development & Design | E1 | Retiring routes with 410 plus Deprecation/Sunset/Link headers and caller identification is implemented in the reference and is a distinct, reusable lifecycle practice not listed in the predefined inventory. |
+| 3 | [`usage-event-identity`](../categories/03-request-context-idempotency/usage-event-identity/SKILL.md) | 03 Request Context & Idempotency | E2 | Deterministic event IDs shared between producer and consumers via the shared package are a distinct organizational practice (effect-level dedupe) needed for any metering/event service and not listed in the predefined inventory. |
+| 4 | [`startup-dependency-validation`](../categories/05-configuration-environment/startup-dependency-validation/SKILL.md) | 05 Configuration & Environment Management | E2 | Verifying dependency reachability (upstream service, Redis, Mongo, Service Bus, queues) at startup with remediation hints and exit(1) is implemented in reference service B and is distinct from env-variable validation. |
+| 5 | [`audit-logging`](../categories/06-observability-health/audit-logging/SKILL.md) | 06 Observability & Health Management | E2 | Non-blocking, masked before/after audit records of mutations (and a TTL-based audit collection) are implemented in both references and are not covered by structured logging. |
+| 6 | [`webhook-delivery`](../categories/08-messaging-event-driven/webhook-delivery/SKILL.md) | 08 Messaging & Event-Driven Architecture | E2 | Subscriber callback registration, SSRF validation, signed delivery with timeout/attempts/worker concurrency is a full outbound pattern in reference service B not covered by predefined skills. |
+| 7 | [`background-worker-processing`](../categories/08-messaging-event-driven/background-worker-processing/SKILL.md) | 08 Messaging & Event-Driven Architecture | E2 | Interval-polled workers with start/stop, re-entrancy guards, batch limits and env enablement are used five times in reference service B and need one reusable standard. |
+| 8 | [`scheduled-job-reconciliation`](../categories/08-messaging-event-driven/scheduled-job-reconciliation/SKILL.md) | 08 Messaging & Event-Driven Architecture | E2 | A daily reconciliation job with UTC window, grace period, Redis single-run lock, done marker, dry-run, tolerance and max-correction safeguards is a reusable scheduled-job pattern. |
+| 9 | [`internal-api-key-authentication`](../categories/10-security-identity/internal-api-key-authentication/SKILL.md) | 10 Security & Identity Management | E1 | x-internal-api-key + x-internal-api-caller authentication (constant-time, fail-closed, boot guard, per-caller registry) is implemented in both repos and is the organization's primary internal-endpoint control; it deserves its own skill. |
+| 10 | [`webhook-signature-verification`](../categories/10-security-identity/webhook-signature-verification/SKILL.md) | 10 Security & Identity Management | E1 | Inbound webhook authentication over the raw body (HMAC-SHA256, constant-time, boot guard, POST only) and the outbound signature format are implemented and require their own reusable standard. |
+| 11 | [`ssrf-protection`](../categories/10-security-identity/ssrf-protection/SKILL.md) | 10 Security & Identity Management | E1 | Both repositories guard client-supplied callback URLs against SSRF with scheme, private-range and allow-list checks; this security control is reusable and not in the predefined list. |
+| 12 | [`cors-policy`](../categories/10-security-identity/cors-policy/SKILL.md) | 10 Security & Identity Management | E2 | Allow-list CORS with typed rejection mapped to a catalogued 403 is a distinct, reusable security control. |
+| 13 | [`bounded-concurrency`](../categories/11-resilience-reliability/bounded-concurrency/SKILL.md) | 11 Resilience & Reliability | E2 | A reusable helper capping parallel I/O and returning ordered settled results (mapWithConcurrency) is used for fan-out and deserves its own standard. |
+| 14 | [`fail-open-fail-closed-policy`](../categories/11-resilience-reliability/fail-open-fail-closed-policy/SKILL.md) | 11 Resilience & Reliability | E2 | Reference service B's explicit policy model (record_only vs enforce, fail-open markers, bounded replay, fail-closed writes on timeout, never-open security) is a distinct, cross-cutting decision framework. |
+| 15 | [`fatal-error-process-policy`](../categories/11-resilience-reliability/fatal-error-process-policy/SKILL.md) | 11 Resilience & Reliability | E2 | Crash-on-fatal (log, flush, exit 1) for uncaughtException/unhandledRejection exists in one reference service and is absent in the other; it is a required reliability policy. |
+| 16 | [`cost-calculation-strategy-registry`](../categories/12-llm-ai-integration/cost-calculation-strategy-registry/SKILL.md) | 12 LLM & AI Integration | E2 | A Strategy + Registry + Decorator pricing engine (product override then global, billing-unit strategies, free tier/margin/minimum-charge decorators) is a significant reusable pattern in reference service B. |
+| 17 | [`in-memory-test-harness`](../categories/13-testing-quality/in-memory-test-harness/SKILL.md) | 13 Testing & Quality Engineering | E2 | Reusable in-memory Redis, Mongo and Service Bus doubles with documented test hooks and a step runner are the enforcement repo's main testing asset. |
+| 18 | [`postman-functional-testing`](../categories/13-testing-quality/postman-functional-testing/SKILL.md) | 13 Testing & Quality Engineering | E2 | Committed Postman collections with environment files plus a step-runner walkthrough are the repos' functional-test practice; Postman CLI is installed on developer machines. |
+| 19 | [`pipeline-security-scanning`](../categories/15-documentation-devops/pipeline-security-scanning/SKILL.md) | 15 Documentation & DevOps | E2 | The production pipeline's mandatory SecretScan (TruffleHog), SonarQube quality gate, Snyk SCA and Trivy container scan before Push form a reusable delivery-security standard. |
+
+## Considered and **not** created (trivial, isolated or domain-specific)
+
+| Candidate | Reason not created |
+|---|---|
+| Subscription/entitlement resolution | Domain logic specific to the reference business, not reusable |
+| Usage-alert threshold messages | Product feature, not engineering convention |
+| Request cancellation / AbortController | No evidence in either repo (E0); noted inside `timeout-management` |
+| Audit of lint/format tooling | None exists (E0); noted in `coding-standards-review` |
+| Data-migration framework | Only a partial script kit exists; covered by `database-migration` |
+| LRU in-process cache | Small utility; covered by `caching-strategy` |
+| Postman CLI automation in CI | Not wired anywhere; noted in `postman-functional-testing` |

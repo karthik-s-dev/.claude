@@ -1,0 +1,449 @@
+@@ structured-logging | Structured Logging
+ev: E1
+cls: MANDATED (`@inextlabs/logger`) + VERIFIED content rules; deviations C-02
+std: OBS-01, OBS-02, OBS-03, CTX-01, ERR-06, PKG-01
+rel: logger-initialization, log-level-standards, correlation-id-management, error-logging, sensitive-data-masking-in-logs, mocking-test-doubles
+d: Use whenever you add, change or review log statements or logging setup in a service. All logging MUST use the approved internal package @inextlabs/logger (Pino-based): object-first calls, structured fields, automatic correlation ID, masked PII, Error under the err key. Never console.log, pino, winston or bunyan.
+scope: Writing log statements and the service logger wrapper.
+app: Node/TypeScript services (`@inextlabs/logger` 1.0.4).
+purpose: Uniform, searchable, safe JSON logs correlated across services.
+when:
+- Writing any log line.
+- Replacing `console.*` or another logger.
+- Creating the service logger module.
+- Reviewing logs for noise, PII or missing correlation.
+org:
+- MUST: Import the logger from the service's single logger module, which wraps `@inextlabs/logger`. No other logging library (`console`, `pino`, `winston`, `bunyan`, any other logger) may be added (PKG-01, C-02). `winston` appearing in a manifest is an unused dependency to report, not a pattern.
+- MUST: Use **Pino argument order**: `logger.info({ field: value }, "message")`; errors as `logger.error(err, "message")` or `{ err: serializeError(err) }`. The legacy `(message, meta)` order (Winston style) must not appear in new code.
+- MUST: Levels `trace | debug | info | warn | error | fatal` (see `log-level-standards`); output is JSON with `service`, `environment`, `version`, `level`, `time`, `pid`, `hostname`, `msg` (guaranteed by the package).
+- MUST: `correlationId` is added automatically by the service wrapper from async context (do not pass it manually in every call).
+- MUST: Request lifecycle logging: "Incoming request" and a completion log with `method`, `path`, `statusCode`, `durationMs`; level by status (5xx `error`, 4xx `warn`, else `info`).
+- MUST: Log structured fields, never string-concatenated payloads; never log request bodies, tokens, keys, connection strings or PII (mask via `sensitive-data-masking-in-logs`).
+- MUST: The error middleware logs once per error with route metadata only (`error-logging`).
+- VERIFIED: Wrapper keeps the package's call shape `(obj | Error | msg, msg?)` and adds `correlationId` from AsyncLocalStorage; `closeLogger()` calls the package `close()` during shutdown to flush the optional Event Hub sink.
+- UNRESOLVED (C-02): One reference service uses a `FlexibleLogger` accepting legacy `(msg, meta)` and passes `correlationId` manually. Do not copy; in that repo new code uses `(meta, msg)`.
+impl:
+- Locate the logger module; reuse it. If missing, create it per `logger-initialization`.
+- Write logs as `logger.<level>({ ids and facts }, "Short past-tense or imperative message")`.
+- Add `child()` loggers only for long-lived components with stable bindings.
+- Add tests with the logger mocked.
+ex: ts | Service logger wrapper (reference)
+import inextLogger, { serializeError } from "@inextlabs/logger";
+import { getCorrelationId } from "@general/utils/correlationContext";
+function log(level: "debug" | "info" | "warn" | "error", objOrMsg: object | string, msg?: string) {
+  const correlationId = getCorrelationId();
+  if (typeof objOrMsg === "string") return correlationId ? inextLogger[level]({ correlationId }, objOrMsg) : inextLogger[level](objOrMsg);
+  if (objOrMsg instanceof Error) return inextLogger[level]({ ...(correlationId && { correlationId }), err: serializeError(objOrMsg) }, msg);
+  return inextLogger[level]({ ...(correlationId && { correlationId }), ...objOrMsg }, msg);
+}
+export const logger = { debug: (o: object | string, m?: string) => log("debug", o, m), info: (o: object | string, m?: string) => log("info", o, m),
+  warn: (o: object | string, m?: string) => log("warn", o, m), error: (o: object | Error | string, m?: string) => log("error", o, m) };
+export const closeLogger = () => inextLogger.close();
+export { serializeError };
+/ex
+ex: ts | Typical statements
+logger.info({ method: req.method, path: req.originalUrl }, "Incoming request");
+logger.warn({ subscriptionId, status }, "Downstream notification failed");
+logger.error(err, "Startup error");
+/ex
+fail:
+- Logging must never throw or block the request path; the wrapper must tolerate circular objects (package is circular-safe).
+sec:
+- Never log `authorization`, cookies, tokens, `x-internal-api-key`, connection strings, request bodies.
+test:
+- Mock `@inextlabs/logger` as `{ default: mockLogger, serializeError, createMasker }` and assert level/message/fields; assert correlation ID appears when ALS is bound.
+anti:
+- `console.log`.
+- `logger.info("msg", obj)` order.
+- Logging whole error payloads/events (log ids and types).
+- A second logger module (stale `v1/utils/logger.ts` duplicates are defects).
+check:
+- Approved package only; Pino order; level by impact; no PII; correlation automatic; tests.
+
+@@ logger-initialization | Logger Initialization
+ev: E1
+cls: MANDATED (package) + VERIFIED bootstrap; C-02
+std: OBS-01, ARCH-03, CFG-05, ERR-03
+rel: structured-logging, service-registration-lifecycle, sensitive-data-masking-in-logs, log-level-standards, application-monitoring
+d: Use when configuring @inextlabs/logger at service start - configureLogger() once before any module imports the logger, level/service/environment/version/serviceCode/mask options, extra createLogger instances, Event Hub sink, close() on shutdown.
+scope: One-time logger configuration and lifecycle.
+app: Node/TypeScript with `@inextlabs/logger`.
+purpose: The singleton proxy only reflects configuration applied before other modules grab it.
+when:
+- Creating `server.ts`/bootstrap.
+- Logs show default service name or missing mask.
+org:
+- MUST: Call `configureLogger({ level, service, version?, environment, serviceCode, mask })` **once**, in a dedicated bootstrap module (`logger.bootstrap.ts#initLogger`), **before** importing `app` or any module that logs (package README; reference `server.ts`).
+- MUST: `level` from `LOG_LEVEL` (default `info`); `service` from `SERVICE_NAME`; `environment` from `APP_ENV`/`DEPLOYMENT_ENV`; `serviceCode` uses the same constant as the error catalog (reference mismatch `"02"` vs `"102"` is a defect, ERR-03); `mask` = the service `MASK_CONFIG` (`sensitive-data-masking-in-logs`).
+- MUST: Validate `LOG_LEVEL` against the allowed set rather than casting blindly (reference weakness).
+- MUST: Call `close()` (via `closeLogger()`) during graceful shutdown **after** draining HTTP so the Event Hub sink flushes (`AZURE_EVENTHUB_NAMESPACE`, `AZURE_EVENTHUB_NAME` optional; stdout otherwise).
+- VERIFIED: Isolated loggers (for example audit) use `createLogger({ service, level, mask })`; the other reference service builds its single logger with `createLogger({ service, level, eventHub? })` - acceptable when the package default singleton is not used (C-02) but never mix both for the same service.
+- GENERIC: Pass `version` from `SERVICE_VERSION`.
+impl:
+- Create `initLogger()`; call it right after env validation and before importing the app.
+- Export a wrapper (see `structured-logging`).
+- In tests, mock the package (no real configuration).
+ex: ts | Bootstrap module (reference)
+import { configureLogger, type LogLevel } from "@inextlabs/logger";
+import { MASK_CONFIG } from "@general/service/logger";
+export function initLogger(): void {
+  configureLogger({
+    level: (process.env.LOG_LEVEL as LogLevel) ?? "info",
+    service: process.env.SERVICE_NAME ?? "<service-name>",
+    serviceCode: SERVICE_CODE,                  // same constant as the error catalog
+    environment: process.env.APP_ENV ?? "development",
+    mask: MASK_CONFIG,
+  });
+}
+/ex
+fail:
+- If `configureLogger` throws, the process exits with a stderr line (logger not yet available).
+test:
+- Bootstrap order test (logger configured before app import); mask applied to a sample.
+anti:
+- Calling `configureLogger` after importing modules that logged.
+- Two configurations.
+- Unvalidated casts.
+check:
+- Single call before imports; level validated; service constant shared; close on shutdown.
+
+@@ log-level-standards | Log Level Standards
+ev: E2
+cls: VERIFIED (OBS-02) + GENERIC fills
+std: OBS-01, OBS-02
+rel: structured-logging, error-logging, logger-initialization, application-monitoring
+d: Use when choosing a log level or configuring LOG_LEVEL per environment - what belongs in trace/debug/info/warn/error/fatal, request-lifecycle levels by status class and probe logging.
+scope: Level selection.
+app: `@inextlabs/logger` levels.
+purpose: Consistent levels so alerts and searches mean the same thing everywhere.
+when:
+- Writing a log call.
+- Tuning noise.
+org:
+- MUST: `fatal` - process will exit (`crashOnFatal`, unrecoverable startup); `error` - unexpected failure / 5xx / dependency failure impacting correctness; `warn` - expected-but-notable (4xx, validation failure, degraded/fail-open, retries, deprecated route hit, legacy access); `info` - lifecycle and request completion (2xx/3xx), worker start/stop, successful notable business events; `debug` - diagnostic detail (cache hit/miss, connection events, health checks); `trace` - most verbose.
+- MUST: Request completion level by status: `>=500 error`, `>=400 warn`, else `info`.
+- VERIFIED: Default `LOG_LEVEL=info`; non-prod may use `debug`.
+- GENERIC: Log probe requests (`/health*`) at `debug` (reference logs them at info/mixed).
+- MUST: Business-expected failures (quota exceeded, not found) are `warn`, not `error`.
+impl:
+- Choose by "who must act": nobody (info/debug), someone later (warn), someone now (error/fatal).
+ex: text | Examples
+info  : "Request completed" {statusCode:200,durationMs:12}
+warn  : "Request validation failed" {segment:"body"}
+error : "Redis operation failed" {err}
+fatal : "Fatal uncaughtException - exiting"
+/ex
+fail:
+- N/A.
+test:
+- Assert level for 200/404/500 request completions.
+anti:
+- Errors logged at `info`.
+- Everything at `error`.
+check:
+- Level matches mapping.
+
+@@ health-endpoint-implementation | Health Endpoint Implementation
+ev: E1
+cls: VERIFIED (OBS-04) / UNRESOLVED (C-15)
+std: OBS-04, ARCH-05, API-10
+rel: liveness-readiness-checks, startup-dependency-validation, dependency-failure-handling, middleware-request-pipeline, graceful-shutdown
+d: Use when adding or changing health endpoints - /health/live and /health/ready, dependency-aware readiness with per-check timeouts and sanitized output, status codes, auth/rate-limit exclusion and container health checks.
+scope: Health endpoint contract and implementation.
+app: Express services.
+purpose: Orchestrators route traffic correctly and restart only when needed.
+when:
+- New service.
+- Adding a dependency.
+- Diagnosing restart loops or traffic to unready pods.
+org:
+- MUST: Two endpoints: `GET /health/live` (process only, no I/O: `{status:"ok", uptime, timestamp, metadata:{correlationId}}`) and `GET /health/ready` (parallel dependency pings -> 200 when none `error`, else **503**; body `status`, `uptime`, `timestamp`, `dependencies:[{ name, status: ok|error|skipped, responseTimeMs, message? }]`, `metadata.correlationId`).
+- MUST: Probes are unauthenticated, not rate-limited, mounted before auth, unversioned; logged at `debug`.
+- MUST: Each check has an explicit bounded timeout and returns a sanitized message (never raw exception text, URIs or secrets).
+- MUST: Readiness includes only dependencies the service cannot serve traffic without (datastore, cache if required); do **not** include upstream services (cascading-unready risk; reference defect) and do not duplicate startup env validation at runtime.
+- UNRESOLVED (C-15): The other reference service exposes `/health` and `/v2/health` returning `ok|degraded|unavailable` with `dependencies:{redis,mongo,serviceBus:{ok,detail}}` and deployment policy fields, and the Dockerfile `HEALTHCHECK` targets `/health`. In that repo keep it; new services use live/ready. Do not expose policy fields (`enforcementDefault`, etc.) on unauthenticated probes.
+- VERIFIED: Optional dependency not configured -> `status:"skipped"` and does not fail readiness.
+impl:
+- Implement `live` and `ready` handlers wrapped with `withCorrelationId`.
+- Run checks with `Promise.all` and per-check timeout (`Promise.race`).
+- Wire container `HEALTHCHECK` to `/health/live`.
+ex: ts | Readiness core (reference, with timeout added)
+const withTimeout = <T>(p: Promise<T>, ms: number) => Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
+const results = await Promise.all([checkMongo(), checkRedis()]);
+const allOk = results.every((d) => d.status !== "error");
+res.status(allOk ? 200 : 503).json({ status: allOk ? "ok" : "error", uptime, timestamp: new Date().toISOString(), dependencies: results, metadata: { correlationId } });
+/ex
+fail:
+- A throwing check yields `status:"error"` with a generic message; the handler itself never throws.
+sec:
+- Expose no hostnames, versions or config values.
+test:
+- All ok -> 200; one error -> 503; skipped dependency; slow dependency -> timeout.
+anti:
+- Calling remote services in readiness.
+- Logging every probe at info.
+- Authenticated probes.
+check:
+- live/ready; timeouts; sanitized; unauthenticated; Docker/pipeline probes updated.
+
+@@ liveness-readiness-checks | Liveness & Readiness Checks
+ev: E1
+cls: VERIFIED (OBS-04)
+std: OBS-04, ARCH-03, RES-05
+rel: health-endpoint-implementation, graceful-shutdown, docker-containerization, kubernetes-deployment, startup-dependency-validation
+d: Use when defining what makes a service alive vs ready, wiring container/orchestrator probes, and flipping readiness during shutdown. Complements health-endpoint-implementation with probe semantics.
+scope: Probe semantics and orchestration wiring.
+app: Containerized services on Azure (Container Apps/App Service/ACI) or Kubernetes.
+purpose: Correct restart and traffic decisions.
+when:
+- Configuring Docker HEALTHCHECK or platform probes.
+- Designing shutdown behaviour.
+org:
+- MUST: Liveness = the process can respond (no dependency checks); readiness = can serve requests now (critical dependencies reachable); a failing dependency must never fail liveness.
+- VERIFIED: Dockerfile `HEALTHCHECK --interval=60s --timeout=10s --start-period=40s --retries=3` with a `node -e http.get` one-liner (reference service B). Align the path with the service's live endpoint.
+- GENERIC (no Kubernetes manifests exist): start-up probe for slow starts; on SIGTERM set a `shuttingDown` flag so readiness returns 503 before draining.
+- MUST: Platform probe paths are listed in deployment documentation (`deployment-documentation`).
+impl:
+- Choose probe paths/timeouts; set start period >= worst-case boot including dependency validation.
+ex: text | Dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 CMD node -e "require('http').get('http://localhost:'+(process.env.PORT||3000)+'/health/live',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+/ex
+fail:
+- Failing readiness removes the instance from rotation without restarting it.
+test:
+- Simulate dependency failure and verify ready 503 / live 200.
+anti:
+- Liveness hitting the database.
+- Probe interval shorter than dependency timeouts.
+check:
+- Semantics, timings, docs.
+
+@@ distributed-tracing | Distributed Tracing
+ev: E2
+cls: TECH / UNRESOLVED (C-10)
+std: CTX-05, OBS-05, CTX-01
+rel: trace-context-propagation, opentelemetry-integration, application-monitoring, correlation-id-management, distributed-request-tracking
+d: Use when enabling or extending distributed tracing - request/dependency spans, exception tracking, trace context, masking before export, no-op when unconfigured - with the target repo's APM (Application Insights SDK or OTEL).
+scope: Spans, exceptions and telemetry export.
+app: Node services (Application Insights / OTEL).
+purpose: End-to-end latency and failure visibility across services.
+when:
+- Adding telemetry calls.
+- Investigating cross-service latency.
+org:
+- MUST: Telemetry initialization is isolated in a service module (`initTelemetry`), enabled only when `APPLICATIONINSIGHTS_CONNECTION_STRING` is set (graceful no-op otherwise), executed at startup before traffic.
+- MUST: Mask payloads before export with the shared mask (`createMasker(MASK_CONFIG)`), truncate large values (4096 chars), serialize circular-safe.
+- MUST: Telemetry never throws into the request path.
+- VERIFIED: API: `trackTrace(level, name, props)`, `trackException`, `trackRequest`; request telemetry context kept in its own `AsyncLocalStorage`; service name constant set in properties.
+- UNRESOLVED (C-10): SDK choice per repo; do not add a second APM.
+impl:
+- Use existing helpers; add custom events for business-critical or legacy-access signals.
+ex: ts | Safe event
+trackTrace("warn", "legacy_route_accessed", { path: req.originalUrl, method: req.method });
+/ex
+fail:
+- Telemetry failure -> warn log; continue.
+test:
+- No-op when connection string unset; masked properties.
+anti:
+- Exporting raw bodies.
+- Custom trace headers.
+check:
+- Guarded; masked; no-op safe.
+
+@@ opentelemetry-integration | OpenTelemetry Integration
+ev: E2
+cls: TECH (single repo, spike) / UNRESOLVED (C-10)
+std: CTX-05, OBS-05, PKG-01
+rel: distributed-tracing, trace-context-propagation, structured-logging, application-monitoring
+d: Use when a service integrates OpenTelemetry - a single service-local init at startup, OTEL_* environment variables, OTLP and Application Insights export targets. Records the spike status so wiring is not assumed complete.
+scope: OTEL setup per service.
+app: Node services (one reference service used an OTEL spike).
+purpose: Standard, vendor-neutral telemetry export.
+when:
+- Bootstrapping a usage-platform service.
+org:
+- MUST: Initialise OTEL once at process start **before** any logger usage, in a service-local module (the reference calls an `initOtelLogging`-style function at the top of the entry file).
+- VERIFIED: The reference init reads `OTEL_SERVICE_NAME`, `OTEL_SDK_DISABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_LOGS_CONSOLE`, `APPLICATIONINSIGHTS_CONNECTION_STRING` and documents export targets; **it was a spike**: full SDK wiring (LoggerProvider/OTLP exporters, `@opentelemetry/sdk-node`) must live in the service. Exporters are configured in the service or an OTEL Collector.
+- MUST: Do not claim traces/metrics are exported until the SDK wiring exists in the target; verify.
+- GENERIC: Prefer OTLP to a collector; keep `OTEL_SDK_DISABLED=true` available for tests.
+impl:
+- Add the init call; document env vars in `.env.example`; add SDK packages only with approval.
+ex: ts | Init
+const otel = initTelemetry({ serviceName: "<service-name>", environment: process.env.NODE_ENV ?? "production" });
+/ex
+fail:
+- Misconfigured exporter must not stop the service.
+test:
+- `OTEL_SDK_DISABLED=true` in tests.
+anti:
+- Assuming spans exist.
+- Adding vendor SDKs alongside OTEL.
+check:
+- Init first; env documented; actual export verified.
+
+@@ metrics-collection | Metrics Collection
+ev: E0
+cls: GENERIC (no organizational evidence)
+std: OBS-06
+rel: application-monitoring, alerting-standards, opentelemetry-integration, performance-review
+d: Use when a service needs operational metrics (request rate, latency, errors, queue depth, cache hit rate). No Prometheus/OTEL-metrics implementation exists in the reference repositories; this skill is a generic baseline and must not be presented as an organizational standard.
+scope: Operational metrics baseline.
+app: Node services.
+purpose: Give a safe starting point until an organizational decision exists.
+when:
+- Asked to "add metrics".
+org:
+- GENERIC: Prefer OTEL metrics through the existing OTEL/App Insights stack (C-10) over a new metrics library; expose no unauthenticated metrics endpoint.
+- GENERIC: Use RED metrics for APIs (rate, errors, duration) and queue depth/age for workers; low-cardinality labels only (never tenant/user IDs).
+- GENERIC: Business usage metrics (usage counters in Redis/Mongo) are product data, not operational metrics - do not conflate.
+- MUST: Request architectural approval before adding a metrics endpoint or library.
+impl:
+- Check the target's APM; propose names/labels in an ADR first.
+ex: text | Proposed naming (GENERIC)
+http_server_duration_ms{route,method,status_class}  | worker_batch_duration_ms{worker}  | outbox_pending_count
+/ex
+fail:
+- Metrics code must never throw.
+test:
+- Unit test the instrumentation wrapper with a fake meter.
+anti:
+- High-cardinality labels.
+- Unauthenticated `/metrics`.
+check:
+- Approval recorded; labels bounded.
+
+@@ application-monitoring | Application Monitoring
+ev: E2
+cls: VERIFIED (OBS-02, OBS-05) partial
+std: OBS-02, OBS-05, OBS-04, API-08
+rel: structured-logging, distributed-tracing, alerting-standards, metrics-collection, health-endpoint-implementation
+d: Use when deciding what to monitor in a service - request logs, error rates from logs/telemetry, dependency health, legacy-route usage, worker activity, queue backlogs - using the logging and telemetry stack that exists.
+scope: Monitoring signals available from the organization's stack.
+app: Services on Azure with App Insights/Event Hub/OTEL.
+purpose: Operators can answer "is it healthy and who is using what".
+when:
+- Defining dashboards/queries.
+- Adding signals for cutover decisions.
+org:
+- VERIFIED signals: request completion logs (status/duration), error logs with code/numericCode, readiness results, legacy-access traces (`legacy_route_accessed`), deprecated-route logs (`deprecatedRoute`, `useInstead`), worker start/stop and batch error logs, outbox attempts/lastError rows, `enforcementStatus:"skipped"` + `failOpenReason` on events, audit records.
+- MUST: Every alertable condition has a stable log message/field (`code`, `numericCode`) - never match on free text.
+- GENERIC: Dashboards/alerts are not in the repos; define them as code in the platform repo when approved.
+impl:
+- List the signals for a feature in the PR description; ensure each exists as a structured field.
+ex: text | Queryable fields
+level, msg, correlationId, statusCode, durationMs, code, numericCode, deprecatedRoute, failOpenReason
+/ex
+fail:
+- N/A.
+test:
+- Assert structured fields exist.
+anti:
+- Log-message-text alerts.
+check:
+- Stable fields.
+
+@@ alerting-standards | Alerting Standards
+ev: E0
+cls: GENERIC (no organizational evidence); business alerting is separate
+std: OBS-06
+rel: application-monitoring, metrics-collection, operational-runbooks, production-readiness-review
+d: Use when defining operational alerts (error rate, readiness failure, backlog, latency). No alert definitions exist in the reference repositories; this is a generic baseline. Do not confuse with usage-threshold notifications, which are product features.
+scope: Operational alert design.
+app: Azure Monitor/App Insights.
+purpose: Actionable, owned alerts with runbooks.
+when:
+- Preparing production readiness.
+org:
+- GENERIC: Alert on symptoms (5xx rate, readiness 503, outbox `pending` age, dead/failed rows, startup crash loops), page only for customer-impacting conditions, every alert links a runbook (`operational-runbooks`).
+- GENERIC: Use `code`/`numericCode` and severity fields, not message text.
+- VERIFIED (distinction): Usage-threshold alerts (email/portal/WhatsApp/webhook/FCM) are product notifications with their own dedupe (`request-deduplication`).
+- MUST: Obtain approval before creating alert rules in shared monitoring.
+impl:
+- Draft alert table in the ADR/runbook.
+ex: text | Table
+Condition | Severity | Runbook
+ready 503 > 5 min | page | runbook-readiness
+failed outbox rows > 0 | ticket | runbook-outbox
+/ex
+fail:
+- N/A.
+test:
+- Review only.
+anti:
+- Alert on every error log.
+check:
+- Owner; runbook; approval.
+
+@@ sensitive-data-masking-in-logs | Sensitive Data Masking in Logs
+ev: E2
+cls: VERIFIED (OBS-03)
+std: OBS-03, OBS-01, SEC-06
+rel: structured-logging, logger-initialization, audit-logging, configuration-security, data-protection
+d: Use when logs, telemetry or audit records may contain PII or secrets - configure MASK_CONFIG on @inextlabs/logger, reuse the same mask for telemetry and audit, mask URIs and API keys, and never log bodies.
+scope: Masking policy and implementation.
+app: Services using `@inextlabs/logger`.
+purpose: Sensitive data never reaches log sinks.
+when:
+- Logging objects with user/tenant/secret fields.
+- Adding a model with new sensitive fields.
+org:
+- MUST: Define one `MASK_CONFIG: MaskConfig` per service extending the package defaults and reuse it for the logger, telemetry export (`createMasker(MASK_CONFIG)`) and audit entries.
+- MUST: Package defaults (19): `email`, `phone`, `mobile` (partial); `password`, `passcode`, `otp`, `token`, `cookie`, `set-cookie`, `refreshToken`, `accessToken`, `apiKey`, `secret`, `clientSecret`, `cvv`, `ssn` (full); `jwt`, `authorization`, `creditCard` (partial). Strategies: `partial` | `full` | function.
+- MUST: Extend with the service's actual field names (reference: `emailId`, `phoneNumber` partial; `key`, `endpoint`, `connectionString`, `connectionstring`, `conn_str` full). Re-audit when schemas change.
+- MUST: Use a local `maskConnectionUri(uri)` helper for URIs and `maskApiKeyForLog(key)` (last 4) for keys; sanitize log metadata with the same mask.
+- MUST: Never log request/response bodies, `req.headers`, or `process.env`.
+impl:
+- Grep the models for sensitive field names; add them to `MASK_CONFIG`.
+- Verify with a test that logs a sample object and inspects output.
+ex: ts | Mask config (reference)
+export const MASK_CONFIG: MaskConfig = {
+  emailId: "partial", phoneNumber: "partial",
+  key: "full", endpoint: "full", connectionString: "full", connectionstring: "full", conn_str: "full",
+};
+/ex
+fail:
+- Masker handles circular/Map/Set; do not pre-stringify objects before logging.
+test:
+- Assert masked output for each configured field; no raw secret in captured logs.
+anti:
+- Relying on defaults for domain-specific names.
+- `JSON.stringify(body)` in logs.
+check:
+- One mask config; reused; audited; tested.
+
+@@ audit-logging | Audit Logging
+ev: E2
+cls: VERIFIED (OBS-07); actor gap
+std: OBS-07, OBS-03, DB-04
+add: Non-blocking, masked before/after audit records of mutations (and a TTL-based audit collection) are implemented in both references and are not covered by structured logging.
+rel: sensitive-data-masking-in-logs, database-indexing, structured-logging, mongodb-client, security-review
+d: Use when a service mutates data that needs an attributable change history - record action, target, before/after (masked), route, actor and correlation, non-blocking and never throwing, with TTL retention and indexes.
+scope: Audit trail for mutations and enforcement decisions.
+app: Services with Mongo.
+purpose: Investigate who changed what and when without blocking the operation.
+when:
+- Adding a mutating endpoint or admin operation.
+- Recording enforcement/limit decisions.
+org:
+- MUST: `recordAuditEntry({ action, targetType, targetId, before, after, route, actor })` called with `void` after the mutation committed; it catches and logs its own errors (never throws) and masks `before/after` with `MASK_CONFIG`.
+- MUST: `actor` is the verified principal (token `azp/appid/sub` or `job:<id>`/`webhook:<id>`); an always-`undefined` actor (reference defect) is not acceptable in new code.
+- MUST: Audit collection has a TTL index (`AUDIT_LOG_TTL_DAYS`) and query indexes created by an `ensureAuditIndexes()` at startup.
+- VERIFIED: Enforcement audit repository stores each check/record decision with correlation ID.
+impl:
+- Add the call after the successful write; pass the correlation ID; add indexes.
+ex: ts | Non-blocking audit call
+void recordAuditEntry({ action: "UPDATE_CONFIG", targetType: "botConfig", targetId: botId, before, after, route: req.route?.path, actor: req.principal?.id });
+/ex
+fail:
+- Audit failure logs `warn` and does not fail the request.
+sec:
+- Mask before persisting; restrict read access to the audit collection.
+test:
+- Entry written with masked fields; failure does not propagate.
+anti:
+- Awaiting audit inside the transaction path.
+- Storing raw secrets.
+- Missing actor.
+check:
+- Masked; non-blocking; actor; TTL; indexes.

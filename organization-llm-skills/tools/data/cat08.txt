@@ -1,0 +1,611 @@
+@@ azure-queue-storage-client | Azure Queue Storage Client
+ev: E2
+cls: VERIFIED (MSG-02) single repo; auth C-13
+std: MSG-02, INT-06, CFG-01, ERR-09
+rel: message-consumer, message-producer, background-worker-processing, azure-sdk-client-management, message-structure-contracts, dead-letter-queue-handling
+d: Use when producing or consuming Azure Queue Storage messages with @azure/storage-queue - QueueClient from connection string, base64 JSON bodies, receive batch limits, delete-after-success, poison/invalid message handling, queue provisioning and readiness.
+scope: Azure Queue Storage usage (separate from Service Bus).
+app: Node.js `@azure/storage-queue` 12.
+purpose: Reliable background job queues with explicit acknowledgement.
+when:
+- Adding a queue-backed job or worker.
+- Handling malformed queue messages.
+org:
+- MUST: One lazy `QueueClient(connectionString, queueName)` per queue; connection string from `AZURE_QUEUE_STORAGE_CONNECTION_STRING`, queue names from env (`AZURE_QUEUE_NOTIFICATIONS_NAME`, `AZURE_QUEUE_THRESHOLD_JOBS_NAME`, `AZURE_QUEUE_WEBHOOK_DELIVERY_NAME`); the getter returns `null`/no-op when unconfigured.
+- MUST: Body = **base64(JSON)** with a canonical `notificationType` (`USAGE-ALERT`) validated on receive; unsupported/legacy types are rejected loudly (error log) and deleted.
+- MUST: `receiveMessages({ numberOfMessages: min(requested, 32) })`; process; then `deleteMessage(messageId, popReceipt)` only **after** success; return `{ messageId, popReceipt, job }` to the worker.
+- MUST: Malformed JSON/unknown type -> warn, count (`droppedInvalidNotificationTypeCount`), **delete** (it can never succeed). Transient processing failure -> do not delete (visibility timeout redelivers) and track attempts in the job (`attempt`) up to max.
+- MUST: Enqueue failures return `false`/throw per caller contract and are logged with identifiers; never silently drop.
+- VERIFIED: Queue existence ensured at startup (IaC/startup) and a `markReady` flag asserted before use (warn if used earlier).
+- UNRESOLVED (C-13): Connection-string auth; Managed Identity (`QueueClient` with `DefaultAzureCredential`) is not implemented - adapter pending approval.
+impl:
+- Create the module `<name>-job-queue.ts` with `enqueue`, `receive`, `delete` functions; add worker (`background-worker-processing`).
+- Add max-attempt and dead-letter-like handling (`dead-letter-queue-handling`).
+ex: ts | Enqueue and receive (reference)
+await client.sendMessage(Buffer.from(JSON.stringify(job)).toString("base64"));
+const res = await client.receiveMessages({ numberOfMessages: Math.min(max, 32) });
+for (const m of res.receivedMessageItems) {
+  const job = JSON.parse(Buffer.from(m.messageText, "base64").toString("utf8"));
+  // validate type -> process -> deleteMessage(m.messageId, m.popReceipt)
+}
+/ex
+fail:
+- Receive/enqueue exceptions logged with queue name; worker loop continues.
+sec:
+- Connection string is a secret; message bodies may hold PII - do not log them.
+test:
+- In-memory queue double; malformed, unsupported type, delete-after-success, redelivery.
+anti:
+- Deleting before processing.
+- Unbounded retry via requeue.
+- Logging bodies.
+check:
+- Base64 JSON; type gate; delete semantics; env; readiness.
+
+@@ azure-service-bus-client | Azure Service Bus Client
+ev: E2
+cls: VERIFIED (MSG-01) single repo; auth C-13
+std: MSG-01, CTX-04, MSG-03, INT-06, CFG-01
+rel: message-producer, event-publishing, usage-event-identity, outbox-pattern, azure-sdk-client-management, azure-service-connection-management
+d: Use when publishing to Azure Service Bus topics with @azure/service-bus - singleton ServiceBusClient, cached sender per topic, topic naming, messageId for duplicate detection, application properties, mandatory-vs-optional broker, health and close.
+scope: Service Bus publisher client (producer side).
+app: Node.js `@azure/service-bus` 7.
+purpose: Durable event publication with duplicate protection.
+when:
+- Publishing events/audit/usage facts.
+- Broker outage handling.
+org:
+- MUST: `ServiceBusClient(connectionString)` created lazily from `SERVICE_BUS_CONNECTION_STRING`; **one `ServiceBusSender` per topic** cached in a `Map`; topic from `SERVICE_BUS_TOPIC_*` overrides or `<SERVICE_BUS_TOPIC_PREFIX><slug>` (`usage-` default), slug lower-case `[a-z0-9-]`.
+- MUST: Message = `{ body, messageId: <deterministic id>, applicationProperties: { productLine, clientId, appId, capability, correlationId? } }`; body converted to the **wire** shape at the last step (`toWirePayload`).
+- MUST: Publish through the outbox when enabled (`outbox-pattern`); direct send only when disabled; failure is never silent (`api-response-structure` 207 + `auditPublished:false`).
+- MUST: `isServiceBusConfigured()`; `SERVICE_BUS_MANDATORY` decides whether absence/outage is fatal at startup/readiness (`checkServiceBusHealth` creates a sender to prove credentials).
+- MUST: `closeServiceBus()` closes senders then the client during shutdown.
+- UNRESOLVED (C-13): connection-string auth; Managed Identity not implemented. Consuming (receivers/sessions) is not implemented in either repo (E0) - see `message-consumer`.
+impl:
+- Reuse the module; add a typed payload interface; add `messageId`; test with the Service Bus double.
+ex: ts | Send (reference)
+const sender = await getSenderForTopic(topic);
+await sender.sendMessages({
+  body: toWirePayload(payload),
+  messageId: payload.usageEventId,
+  applicationProperties: { productLine: payload.productLine, clientId: payload.tenantId, correlationId: payload.correlationId },
+});
+/ex
+fail:
+- Send failure -> outbox row stays `pending` and retries; in direct mode log `error` and throw so the caller reports `207`.
+sec:
+- Connection string in env only; never log message bodies with PII.
+test:
+- `__setPublishUsageEventForTests`-style override or in-memory Service Bus double; assert messageId, properties and failure path.
+anti:
+- Creating a sender per message.
+- Random message IDs.
+- Dropping events when sender missing.
+check:
+- Sender cache; messageId; outbox; health; close.
+
+@@ message-producer | Message Producer
+ev: E2
+cls: VERIFIED (MSG-01, MSG-03, CTX-04)
+std: MSG-01, MSG-02, MSG-03, MSG-04, CTX-04, CTX-01
+rel: azure-service-bus-client, azure-queue-storage-client, outbox-pattern, message-structure-contracts, usage-event-identity, event-publishing
+d: Use when writing code that sends messages or jobs - typed payload, identity set before send, correlation attached, durable outbox vs direct send, failure visibility to the caller, wire-shape conversion.
+scope: Producer-side contract and failure behaviour.
+app: Service Bus topics and Storage queues.
+purpose: Every message is identifiable, traceable and never silently lost.
+when:
+- Adding a publish.
+org:
+- MUST: Build a typed payload; set the deterministic message ID and `correlationId` before publish; convert to wire shape last.
+- MUST: Prefer **outbox then publish** (row first); direct send only when the outbox is disabled by configuration.
+- MUST: The producing API reports publication failure (`207` + `auditPublished:false`) - the caller can reconcile.
+- MUST: Fail-open answers publish with `enforcementStatus: "skipped"` and `failOpenReason` so consumers know the live check did not run.
+impl:
+- Implement `publishX(input)` that normalizes -> ID -> outbox/direct -> returns status.
+ex: ts | Producer facade (reference pattern)
+export async function publishUsageEvent(input: UsageEventPayload): Promise<void> {
+  const payload = withUsageEventId(input);
+  if (config.usageOutbox.enabled) { await enqueueUsageEventOutbox(payload); return; }
+  await publishUsageEventDirect(payload);   // throws -> caller returns 207
+}
+/ex
+fail:
+- Explicit; see outbox.
+test:
+- Outbox on/off; failure surfaces; ID stable on retry.
+anti:
+- Fire-and-forget publish without catch.
+check:
+- ID, correlation, outbox, failure visibility.
+
+@@ message-consumer | Message Consumer
+ev: E2
+cls: VERIFIED (queue consumers MSG-02) / GENERIC (Service Bus)
+std: MSG-02, MSG-07, MSG-06, CTX-01
+rel: azure-queue-storage-client, background-worker-processing, message-idempotency, inbox-pattern, dead-letter-queue-handling, event-consumption
+d: Use when writing a consumer or worker that receives queue/topic messages - poll loop, batch limits, validation, correlation rebind, acknowledge-after-success, poison handling, attempt tracking. Queue consumers are evidenced; Service Bus consumers are a generic baseline.
+scope: Consumer-side processing.
+app: Storage queue workers (evidenced); Service Bus receivers (generic).
+purpose: At-least-once processing without loops or loss.
+when:
+- Adding a consumer.
+org:
+- MUST: Worker loop per `background-worker-processing`; batch <= 32 for Storage queues; each message processed in its own try/catch.
+- MUST: Rebind correlation from the message payload (`runWithCorrelationId`) before processing; log with it.
+- MUST: Validate type and shape; invalid -> warn and delete; valid -> process -> acknowledge (delete) **after** success; failures leave the message to reappear or are re-enqueued with `attempt+1` up to `MAX_ATTEMPTS`.
+- MUST: Consumers are idempotent (`message-idempotency`).
+- GENERIC (Service Bus): use `peekLock`, `completeMessage` after success, `abandonMessage` on transient failure, `deadLetterMessage` with reason on poison; broker MaxDeliveryCount configured in IaC.
+impl:
+- Implement receive -> validate -> dedupe -> process -> ack.
+ex: ts | Worker body (reference pattern)
+for (const { messageId, popReceipt, job } of await receiveJobs(batchSize)) {
+  await runWithCorrelationId(job.correlationId ?? randomUUID(), async () => {
+    try { await handle(job); await deleteJob(messageId, popReceipt); }
+    catch (err) { logger.warn({ messageId, attempt: job.attempt, err: serializeError(err) }, "Job failed; will retry"); }
+  });
+}
+/ex
+fail:
+- Poison handling per `dead-letter-queue-handling`.
+test:
+- Success, handler throws, malformed, duplicate delivery.
+anti:
+- Ack-before-process.
+- Infinite redelivery.
+check:
+- Ack timing; idempotent; poison path.
+
+@@ event-publishing | Event Publishing
+ev: E2
+cls: VERIFIED (MSG-01, MSG-03, MSG-04)
+std: MSG-01, MSG-03, MSG-04, CTX-04
+rel: message-producer, event-driven-architecture, message-structure-contracts, outbox-pattern, usage-event-identity
+d: Use when a service announces a domain fact (usage recorded, subscription changed, threshold crossed) for others to consume - event naming, payload contract, identity, durability, and the webhook or topic channel.
+scope: Publishing domain events.
+app: Service Bus topics, webhooks.
+purpose: Facts are published once, identifiably and durably.
+when:
+- Adding an event.
+org:
+- MUST: Event = immutable fact with a stable ID (`usageEventId`), tenant identity, timestamp ISO-8601, correlation ID, and a type/capability; see `message-structure-contracts`.
+- MUST: Publish after the fact is durably recorded (outbox); never publish before commit.
+- VERIFIED: Channels: Service Bus topic per product/solution (`usage-<slug>`), HTTP change notification to specific consumers (`POST .../internal/subscription-changed` with internal key), outbound webhooks to subscribers (`webhook-delivery`).
+impl:
+- Define type; add to contract doc; publish via producer facade.
+ex: text | Event naming
+usage.recorded | subscription.changed | usage.alert.threshold-crossed  (GENERIC naming; follow target contract docs)
+/ex
+fail:
+- See producer/outbox.
+test:
+- Contract tests for payload.
+anti:
+- Publishing commands as events.
+- Mutable events.
+check:
+- ID, durability, contract.
+
+@@ event-consumption | Event Consumption
+ev: E0
+cls: GENERIC (no Service Bus consumer in reference repos)
+std: MSG-06, MSG-07
+rel: message-consumer, message-idempotency, inbox-pattern, dead-letter-queue-handling, event-driven-architecture
+d: Use when consuming domain events from a topic or webhook. The reference repositories contain no Service Bus consumers (ingestion lives elsewhere); webhook ingestion and queue workers are the evidenced analogues. This is a generic baseline.
+scope: Event-handling semantics.
+app: Service Bus subscriptions, inbound webhooks.
+purpose: Safe at-least-once handling.
+when:
+- Adding an event handler.
+org:
+- GENERIC: Handlers are idempotent (unique key from event ID); validate schema/version; rebind correlation; complete only after durable effect; poison to dead-letter with reason.
+- VERIFIED (webhooks): verify authenticity first (`webhook-signature-verification`), respond 2xx quickly, process idempotently by provider event ID.
+- MUST: Consumers use the event's own ID for dedupe (`message-deduplication`), never a receive-time ID.
+impl:
+- Follow `message-consumer` + `inbox-pattern`.
+ex: text | Handler outline
+verify signature -> parse + validate -> dedupe by eventId -> apply -> mark processed -> 2xx
+/ex
+fail:
+- Unprocessable payload -> 2xx + log (avoid provider retry storms) or 4xx per provider contract.
+test:
+- Duplicate events; out-of-order.
+anti:
+- Processing before verifying.
+check:
+- Idempotent; verified; ack after effect.
+
+@@ message-structure-contracts | Message Structure & Contracts
+ev: E2
+cls: VERIFIED (MSG-04)
+std: MSG-04, CTX-04, CTX-01
+rel: message-versioning, event-publishing, message-producer, api-contract-testing, contract-testing
+d: Use when defining or changing message/job payloads - typed interface, identity and correlation fields, ISO timestamps, wire vs internal names, canonical type values, JSON Schema documentation, deprecation of enum values.
+scope: Message shape and documentation.
+app: Service Bus/queue/webhook payloads.
+purpose: Producers and consumers share an explicit, testable contract.
+when:
+- Adding/changing a field or type.
+org:
+- MUST: A typed interface per message with required identity (`usageEventId`, tenant/client ID, `appId`), metric/type key, numeric `value`, `ts` (ISO-8601), `correlationId`; optional context fields documented.
+- MUST: Wire names are the contract; internal renames are converted at the last step (`toWirePayload`: `tenantId -> clientId`) so queued rows older than the change still publish correctly.
+- MUST: Canonical enum/type strings (`USAGE-ALERT`) are constants; deprecated values are rejected with an `error` log naming the replacement.
+- VERIFIED: Input JSON Schemas under `docs/*.json`; payload field docs in `docs/`.
+- MUST: Do not include PII beyond what the consumer needs.
+impl:
+- Update interface, mapper, schema file, docs and contract tests together.
+ex: ts | Interface (reference-style)
+export interface UsageEventPayload {
+  productLine: string; tenantId: string; appId: string; metricKey: string; value: number; ts: string;
+  usageEventId?: string; correlationId?: string; idempotencyKey?: string; enforcementStatus?: "recorded" | "skipped"; failOpenReason?: string;
+}
+/ex
+fail:
+- Invalid inbound messages -> `dead-letter-queue-handling`.
+test:
+- Schema validation tests; round-trip serialization.
+anti:
+- Reusing a field with new meaning.
+- Unversioned breaking change.
+check:
+- Typed; documented; compatible.
+
+@@ message-versioning | Message Versioning
+ev: E0
+cls: GENERIC (no organizational evidence)
+std: MSG-04, API-08
+rel: message-structure-contracts, api-versioning, event-driven-architecture, breaking-change-review
+d: Use when message contracts must evolve with producers and consumers deployed independently. Neither reference repository versions messages (no schema version field); this is a generic baseline requiring approval before a convention is introduced.
+scope: Message schema evolution.
+app: Service Bus/queue/webhook.
+purpose: Backward compatible evolution.
+when:
+- Changing a payload shape.
+org:
+- GENERIC: Additive-only changes within a version; add a `schemaVersion` (integer) field only when a breaking change is unavoidable and consumers are known; support N and N-1 during migration; use distinct topics/types for incompatible versions.
+- VERIFIED (practice): wire-name conversion at the last step and rejection of deprecated type values act as the de-facto compatibility tools.
+- MUST: Obtain architectural approval before introducing `schemaVersion` or versioned topics.
+impl:
+- Prefer additive change; document; test old-shape messages (including those already in outbox rows).
+ex: json | Optional version field (GENERIC)
+{ "schemaVersion": 2, "usageEventId": "idem:req-1:llmInputTokens", "clientId": "..." }
+/ex
+fail:
+- Unknown version -> dead-letter with reason.
+test:
+- Old-shape and new-shape consumers.
+anti:
+- Silent semantic change.
+check:
+- Additive; approval.
+
+@@ message-retry-strategy | Message Retry Strategy
+ev: E2
+cls: VERIFIED (MSG-03) / defects
+std: MSG-03, RES-03, CFG-05
+rel: outbox-pattern, retry-policy, exponential-backoff, dead-letter-queue-handling, background-worker-processing
+d: Use when deciding how failed publishes or jobs are retried - attempt counters, max attempts, backoff via nextAttemptAt, terminal failed state, per-batch isolation and configuration.
+scope: Retry behaviour of outbox and queue workers.
+app: Mongo outbox, Storage queue jobs.
+purpose: Bounded, observable retries.
+when:
+- Adding an outbox/job.
+org:
+- MUST: Persist `attempts`, `lastError` and (for backoff) `nextAttemptAt`; `status` transitions `pending -> published|failed`; after `MAX_ATTEMPTS` (env, e.g. `USAGE_EVENT_OUTBOX_MAX_ATTEMPTS`, `WEBHOOK_DELIVERY_MAX_ATTEMPTS`; reference outbox constant 8) set `failed` and alert.
+- VERIFIED: One reference outbox uses **linear** delay `min(60 s * attempts, 15 min)` with `nextAttemptAt` and a 30 s sweep; the other reference outbox has no delay (re-polled each tick) - defect: add `nextAttemptAt` backoff in new code.
+- MUST: Retry is idempotent downstream (deterministic IDs).
+- GENERIC: Add jitter to backoff (not present in the reference).
+impl:
+- Add fields + index `{status, nextAttemptAt}`; claim rows atomically (`findOneAndUpdate` to `processing`) when multi-replica.
+ex: ts | Backoff (reference)
+const backoffMs = Math.min(60_000 * attempts, 15 * 60_000);
+await coll.updateOne({ _id }, { $set: { status: attempts >= MAX_ATTEMPTS ? "failed" : "pending", nextAttemptAt: new Date(Date.now() + backoffMs), lastError, attempts } });
+/ex
+fail:
+- Terminal `failed` rows are retained (TTL) and surfaced to operators.
+test:
+- Attempts increment; max -> failed; delay respected.
+anti:
+- Hot retry loops.
+- Unlimited attempts.
+check:
+- Counters; max; backoff; terminal state; alerting.
+
+@@ dead-letter-queue-handling | Dead Letter Queue Handling
+ev: E0
+cls: GENERIC (no organizational evidence); terminal-state analogues
+std: MSG-03, MSG-06
+rel: message-retry-strategy, message-consumer, azure-queue-storage-client, operational-runbooks, alerting-standards
+d: Use when a message can never be processed or exceeds retries. No Service Bus dead-letter code exists in the reference repositories; evidenced analogues are the outbox `failed` status (kept for TTL) and deleting malformed queue messages. This is a generic baseline.
+scope: Poison message handling.
+app: Service Bus (dead-letter sub-queue), Storage queue (poison queue).
+purpose: Poison messages do not block or loop and remain diagnosable.
+when:
+- Designing a consumer.
+org:
+- VERIFIED analogue: outbox `status: "failed"` + `lastError` retained until TTL; malformed Storage-queue messages are logged and deleted.
+- GENERIC: Prefer **retaining** unprocessable business messages (Service Bus `deadLetterMessage(reason, description)` or a `<queue>-poison` queue) over deleting; record reason, attempts, correlation ID; alert on depth > 0; provide a replay runbook.
+- MUST: Deletion is acceptable only for structurally invalid messages that cannot be repaired (log with `messageId`).
+impl:
+- Decide per message class; document in the runbook.
+ex: text | Dead-letter reason format (GENERIC)
+reason=VALIDATION_FAILED; attempts=5; correlationId=...; lastError=...
+/ex
+fail:
+- Poison handling must not throw.
+test:
+- Poison message ends in DLQ with reason.
+anti:
+- Infinite redelivery.
+- Silent deletion of valid-looking business messages.
+check:
+- Retained; reason; alert; replay procedure.
+
+@@ message-deduplication | Message Deduplication
+ev: E2
+cls: VERIFIED (CTX-04, MSG-01)
+std: CTX-04, MSG-01, MSG-06
+rel: usage-event-identity, message-idempotency, request-deduplication, azure-service-bus-client, idempotency-management
+d: Use when the same message may be delivered or published more than once - broker duplicate detection via messageId, deterministic IDs, consumer unique-index dedupe and redelivery-safe retries.
+scope: Broker/consumer-level dedupe.
+app: Service Bus.
+purpose: Counted once.
+when:
+- Publishing/consuming facts.
+org:
+- MUST: Set `messageId = usageEventId` (deterministic) so Service Bus duplicate detection (when enabled on the topic) drops a redelivered fact; broker detection is time-windowed so consumers must also enforce a unique index on the event ID within `{productLine, clientId}`.
+- MUST: Retries re-send the **same** ID.
+- VERIFIED: Multi-replica outbox workers may double-send; downstream dedupe covers it.
+impl:
+- Confirm topic `requiresDuplicateDetection` in IaC; add consumer unique index.
+ex: text | Dedupe layers
+deterministic ID -> messageId (broker window) -> consumer unique index (permanent)
+/ex
+fail:
+- Duplicate -> consumer treats as success.
+test:
+- Publish twice -> one effect.
+anti:
+- Random IDs.
+check:
+- ID stable; consumer index.
+
+@@ message-idempotency | Message Idempotency
+ev: E2
+cls: VERIFIED (CTX-03, CTX-04) + GENERIC
+std: CTX-03, CTX-04, MSG-06
+rel: idempotency-management, message-deduplication, message-consumer, inbox-pattern, usage-event-identity
+d: Use when a consumer or webhook handler may process the same message more than once - make the effect idempotent with a deterministic key, atomic claim and result recording.
+scope: Consumer-side idempotent effects.
+app: Workers/webhooks.
+purpose: At-least-once delivery yields exactly-once effects.
+when:
+- Writing handlers.
+org:
+- MUST: The effect is keyed by an immutable event/message ID; use unique index/atomic set-if-absent; treat "already processed" as success.
+- VERIFIED: Domain dedupe helpers (`threshold-dedup`, `webhook-idempotency`, `fact-dedupe`) are table-tested.
+- MUST: Request-level HTTP idempotency uses `idempotency-management`, not this skill.
+impl:
+- Choose key; implement claim; record outcome.
+ex: ts | Atomic claim
+const claimed = await redis.set("msg:" + eventId, "1", "EX", ttl, "NX");
+if (claimed !== "OK") return; // already handled
+/ex
+fail:
+- Claim store unavailable -> retry later (do not process blind) unless fail-open approved.
+test:
+- Duplicate delivery.
+anti:
+- Non-atomic check-then-set.
+check:
+- Atomic; TTL >= replay window.
+
+@@ outbox-pattern | Outbox Pattern
+ev: E2
+cls: VERIFIED (MSG-03)
+std: MSG-03, DB-04, CFG-06, RES-03
+rel: message-producer, azure-service-bus-client, message-retry-strategy, background-worker-processing, event-publishing, database-indexing
+d: Use when a side effect (publish, notify) must not be lost if the process crashes or the broker/downstream is down - persist the intent first, deliver from a background worker with attempts, TTL and terminal failure.
+scope: Durable asynchronous delivery.
+app: Mongo + Service Bus/HTTP.
+purpose: No lost business-critical side effects.
+when:
+- Publishing usage events.
+- Notifying another service of a change that must not be missed.
+org:
+- MUST: Insert the outbox row (`payload`, `status:"pending"`, `attempts:0`, `createdAt`) **before** attempting delivery; delivery by a worker polls `{status:"pending"}` sorted by `createdAt`, batch size from env, `running` flag prevents overlap, per-item try/catch.
+- MUST: Success -> `published` + `publishedAt`; failure -> increment `attempts`, store `lastError`, `failed` after max attempts; TTL index removes old rows.
+- MUST: Enabled/worker flags `USAGE_EVENT_OUTBOX_ENABLED`, `..._WORKER_ENABLED`; poll/batch/max/TTL env; fallback to direct send only when disabled.
+- MUST: Apply to **every** business-critical async side effect (reference gap: webhook fan-out is fire-and-forget).
+- GENERIC: Claim rows atomically (`processing` state) before sending when more than one replica runs workers; add `nextAttemptAt`.
+impl:
+- Repository (`enqueue/fetchPending/markPublished/markFailed/ensureIndexes`) + worker + start/stop in bootstrap.
+ex: ts | Enqueue then deliver
+await coll.insertOne({ payload, status: "pending", attempts: 0, createdAt: new Date() });
+// worker
+const entries = await coll.find({ status: "pending" }).sort({ createdAt: 1 }).limit(batch).toArray();
+for (const e of entries) { try { await publishDirect(e.payload); await markPublished(e._id); } catch (err) { await markFailed(e._id, String(err), (e.attempts ?? 0) + 1); } }
+/ex
+fail:
+- Outbox insert failure is a hard failure of the operation (503) unless fail-open approved.
+sec:
+- Payload may include PII - TTL and access control.
+test:
+- Row-before-send; retry; max attempts; TTL; worker overlap guard.
+anti:
+- Publishing then writing the row.
+- Unbounded retries.
+check:
+- Row first; worker; attempts; TTL; indexes.
+
+@@ inbox-pattern | Inbox Pattern
+ev: E0
+cls: GENERIC (no organizational evidence)
+std: MSG-06
+rel: message-idempotency, message-consumer, event-consumption, database-indexing
+d: Use when a consumer must persist processed message IDs to guarantee exactly-once effects across restarts. Not implemented in the reference repositories (consumers are in other services); generic baseline.
+scope: Consumer inbox table.
+app: Mongo/relational.
+purpose: Durable dedupe of consumed messages.
+when:
+- Consuming broker events with side effects.
+org:
+- GENERIC: `inbox` collection with unique index on `{ source, messageId }`, `status`, `processedAt`, TTL >= max redelivery window; insert-then-process (duplicate key => skip) or process-in-transaction where supported.
+- MUST: Reuse deterministic event IDs as `messageId`.
+- MUST: Approval before adding a new collection for this purpose in shared stores.
+impl:
+- Insert first; on duplicate key return; process; mark done.
+ex: ts | GENERIC
+try { await inbox.insertOne({ _id: messageId, receivedAt: new Date() }); } catch (e) { if (isDuplicateKey(e)) return; throw e; }
+/ex
+fail:
+- Failure after insert before effect: use status `processing` + lease to resume.
+test:
+- Duplicate and crash-resume.
+anti:
+- In-memory dedupe.
+check:
+- Unique; TTL; approval.
+
+@@ event-driven-architecture | Event-Driven Architecture
+ev: E2
+cls: VERIFIED (ARCH-07, MSG-01, MSG-03, MSG-05) partial
+std: ARCH-07, MSG-01, MSG-03, MSG-05, CTX-04
+rel: event-publishing, event-consumption, outbox-pattern, service-boundary-responsibility, webhook-delivery, message-idempotency
+d: Use when designing flows across services using events, queues and webhooks instead of synchronous calls - choose channel, durability, idempotency, ordering expectations and failure policy using the organization's evidenced building blocks.
+scope: Asynchronous architecture decisions.
+app: Azure Service Bus, Storage Queues, webhooks, HTTP notifications.
+purpose: Consistent event-driven designs.
+when:
+- A service must tell others something changed or happened.
+org:
+- VERIFIED building blocks: Service Bus topic per product (usage facts to ingestion), Storage Queues for background jobs (notification, threshold alert, webhook delivery), HTTP change notification with internal key, outbound signed webhooks to subscribers, Mongo outbox for durability, deterministic event IDs for dedupe, reconciler job comparing counters to facts.
+- MUST: Choose: topic for facts with many consumers; queue for work items; HTTP/webhook for direct notification; always with durability (outbox) and dedupe (event ID) and correlation propagation.
+- MUST: Document producer, consumers, contract, failure policy and replay procedure.
+- GENERIC: Ordering is not guaranteed; design for out-of-order.
+impl:
+- Write a one-page flow note; implement producer/consumer skills; add reconciliation for counters.
+ex: text | Flow note
+fact -> outbox -> topic usage-<product> -> ingestion (unique index on usageEventId) ; reconciler compares Redis counters to stored facts daily
+/ex
+fail:
+- Replay from outbox/DLQ per runbook.
+test:
+- End-to-end with in-memory doubles (`in-memory-test-harness`).
+anti:
+- Synchronous cascades for non-critical work.
+- Events without IDs.
+check:
+- Channel; durability; dedupe; docs.
+
+@@ webhook-delivery | Webhook Delivery (Outbound)
+ev: E2
+cls: VERIFIED (MSG-05, INT-03)
+std: MSG-05, INT-03, SEC-04, RES-02, RES-06
+add: Subscriber callback registration, SSRF validation, signed delivery with timeout/attempts/worker concurrency is a full outbound pattern in reference service B not covered by predefined skills.
+rel: webhook-signature-verification, ssrf-protection, background-worker-processing, azure-queue-storage-client, request-deduplication, bounded-concurrency
+d: Use when a service delivers callbacks to subscriber-supplied URLs - registration with validation, SSRF checks, HMAC-signed payloads with timestamp, delivery timeout, attempt limits, queue-backed worker, inline delivery concurrency and idempotency.
+scope: Outbound webhook subscription and delivery.
+app: Node services.
+purpose: Safe, reliable callbacks to untrusted endpoints.
+when:
+- Adding subscriptions/notifications to external callbacks.
+org:
+- MUST: Validate callback URL at registration and at delivery: https, no loopback/private/link-local/metadata hosts, optional allow-list (`WEBHOOK_CALLBACK_URL_ALLOWLIST`); relaxed only locally (`ssrf-protection`).
+- MUST: Sign every delivery: headers `X-Webhook-Timestamp` (unix seconds) and `X-Webhook-Signature: sha256=<hex HMAC-SHA256(secret, "<timestamp>.<body>")>`; secret `WEBHOOK_HMAC_SECRET`.
+- MUST: Bounded: `WEBHOOK_DELIVERY_TIMEOUT_MS`, `WEBHOOK_DELIVERY_MAX_ATTEMPTS`, worker poll/batch, `WEBHOOK_INLINE_DELIVERY_CONCURRENCY`.
+- MUST: Delivery jobs go through a queue/outbox with `attempt` counters; failures logged with subscription ID and status only; use delivery idempotency key (`webhook-idempotency`).
+- MUST: Do not follow redirects to internal addresses; do not send secrets in URLs.
+impl:
+- Subscription service validates + stores; dispatcher enqueues; worker delivers with signature and records result.
+ex: ts | Signature headers (reference)
+export function buildWebhookSignatureHeaders(secret: string | undefined, body: string): Record<string, string> {
+  if (!secret) return {};
+  const ts = Math.floor(Date.now() / 1000).toString();
+  const sig = createHmac("sha256", secret).update(ts + "." + body).digest("hex");
+  return { "X-Webhook-Timestamp": ts, "X-Webhook-Signature": "sha256=" + sig };
+}
+/ex
+fail:
+- Non-2xx/timeout -> retry until max attempts then mark failed; never block the originating request.
+sec:
+- SSRF, secret handling, signature, no PII beyond need.
+test:
+- Signature vector; SSRF rejections; retry counts; timeouts.
+anti:
+- Unsigned callbacks.
+- Following user-supplied hosts without validation.
+check:
+- Validate; sign; bounds; queue; idempotency.
+
+@@ background-worker-processing | Background Worker Processing
+ev: E2
+cls: VERIFIED (MSG-07)
+std: MSG-07, ARCH-03, CFG-06, RES-03
+add: Interval-polled workers with start/stop, re-entrancy guards, batch limits and env enablement are used five times in reference service B and need one reusable standard.
+rel: outbox-pattern, message-consumer, scheduled-job-reconciliation, graceful-shutdown, service-registration-lifecycle, bounded-concurrency
+d: Use when adding any in-process background loop (outbox publisher, queue consumer, delivery worker, sweep) - start/stop functions, setInterval with immediate first run, running flag, per-batch try/catch, env enable/poll/batch, shutdown order.
+scope: In-process worker lifecycle.
+app: Node services.
+purpose: Workers that never overlap, never crash the process, and stop cleanly.
+when:
+- Any polling/sweep logic.
+org:
+- MUST: Export `startXWorker()` / `stopXWorker()`; enabled by `X_WORKER_ENABLED` and the feature flag; interval from `X_WORKER_POLL_MS`; batch from `X_WORKER_BATCH_SIZE`; log started/disabled with settings.
+- MUST: Module-level `timer` and `running` guard; `processBatch()` returns immediately if `running`; always `finally { running = false }`; whole batch in try/catch and per item try/catch.
+- MUST: First run immediately (`void processBatch()`), then interval; `unref()` timers when they must not block exit.
+- MUST: Stopped first during shutdown; wait for the in-flight batch when feasible.
+- GENERIC: Bind a fresh correlation ID per tick.
+impl:
+- Copy the skeleton; add metrics logs; add tests with fake timers.
+ex: ts | Skeleton (reference)
+let timer: ReturnType<typeof setInterval> | null = null; let running = false;
+async function processBatch() { if (running || !config.worker.enabled) return; running = true;
+  try { for (const item of await fetchPending(config.worker.batch)) { try { await handle(item); } catch (err) { logger.warn({ id: item.id, err: serializeError(err) }, "Item failed"); } } }
+  catch (err) { logger.error(err, "Worker batch error"); } finally { running = false; } }
+export function startWorker() { if (timer || !config.worker.enabled) return; timer = setInterval(() => void processBatch(), config.worker.pollMs); void processBatch(); }
+export function stopWorker() { if (timer) { clearInterval(timer); timer = null; } }
+/ex
+fail:
+- Errors logged and counted; loop continues.
+test:
+- Fake timers: no overlap; stop prevents ticks; batch error does not kill loop.
+anti:
+- `while(true)` loops.
+- Unhandled promise in interval.
+check:
+- start/stop; guard; flags; shutdown.
+
+@@ scheduled-job-reconciliation | Scheduled Job & Reconciliation
+ev: E2
+cls: VERIFIED (DB-06, MSG-07) single repo
+std: DB-06, MSG-07, CFG-05
+add: A daily reconciliation job with UTC window, grace period, Redis single-run lock, done marker, dry-run, tolerance and max-correction safeguards is a reusable scheduled-job pattern.
+rel: distributed-locking, background-worker-processing, event-driven-architecture, feature-flag-management, operational-runbooks
+d: Use when a job must run on a schedule once across replicas - UTC run window with grace hours, single-run lock, per-day done marker, dry-run, tolerance and maximum-correction guards, and configurable thresholds.
+scope: Scheduled single-run jobs.
+app: Node services with Redis.
+purpose: Safe periodic correction jobs.
+when:
+- Daily/hourly maintenance or reconciliation.
+org:
+- MUST: A 60 s tick decides `shouldRunNow(now, runAtUtc "HH:MM", graceHours)` (missed run during restart still runs inside the grace window); skip if `reconcile:done:<UTC date>` exists; acquire `SET reconcile:lock <host:pid> EX <secs> NX`; set done marker with TTL after success.
+- MUST: Corrections are guarded: `dryRun`, tolerance (`tolerancePct`, `toleranceAbs`), `maxCorrectionPct`, `maxRechecks`, `recheckIntervalMin`, `ingestLagMin` - all env-configurable with safe defaults (dry-run on until approved).
+- MUST: `stopCounterReconciler()` awaited on shutdown.
+impl:
+- Implement as worker + pure `runReconciliation(deps, options)` with injected deps for tests.
+ex: ts | Window check (reference)
+export function shouldRunNow(now: Date, runAtUtc: string, graceHours: number): boolean {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(runAtUtc.trim()); if (!m) return false;
+  const start = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), Number(m[1]), Number(m[2]));
+  return now.getTime() >= start && now.getTime() < start + graceHours * 3600_000;
+}
+/ex
+fail:
+- Failures release/skip; next tick may retry within grace; logs summary.
+test:
+- Window boundaries; lock contention; dry-run; tolerance.
+anti:
+- cron-in-process without lock.
+- Auto-correcting without caps.
+check:
+- Window; lock; done marker; guards; tests.

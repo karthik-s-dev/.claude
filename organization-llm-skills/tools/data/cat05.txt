@@ -1,0 +1,368 @@
+@@ required-environment-variables | Required Environment Variables
+ev: E1
+cls: VERIFIED (CFG-01, CFG-02, CFG-04)
+std: CFG-01, CFG-02, CFG-04, CFG-07
+rel: configuration-validation, configuration-management, optional-environment-variables, configuration-security, startup-dependency-validation
+d: Use when adding configuration the service cannot run without (datastore URIs, auth tenant/audience/role, secrets, upstream URLs) - declare it in the single env schema, fail fast at startup with aggregated secret-free errors, and apply stricter rules outside local/dev.
+scope: Mandatory environment variables.
+app: Node services with `dotenv`; Zod schema (aliased reference) or explicit config module (flat reference).
+purpose: A misconfigured service must refuse to start rather than run in an undefined or insecure state.
+when:
+- Adding a dependency that needs a URL/credential.
+- Adding an auth setting.
+- Reviewing `process.env.X!` usages.
+org:
+- MUST: Every required variable is declared once in the service's env schema (`env.schema.ts` with `.min(1, "X is required")`) and validated by `validateEnv()` in the bootstrap **before** the app is imported; failures throw one aggregated message (`path: message` lines) and the process exits non-zero.
+- MUST: Reference required set (reference service A): `AZURE_SERVICE_OAUTH_TENANT_IDS`, `AZURE_SERVICE_OAUTH_AUDIENCE`, `AZURE_SERVICE_OAUTH_APP_ROLE`, `MONGO_DB_CONNECTION_STRING`, `MONGO_PLATFORM_ADMIN_DB_NAME`, `MONGO_DB_USER`, `MONGO_DB_PASSWORD`, `AZURE_CACHE_FOR_REDIS_HOST_NAME`, `AZURE_CACHE_FOR_REDIS_ACCESS_KEY`. Reference service B: `CONFIG_SERVICE_BASE_URL` (+ Mongo/Redis/auth by environment; marked REQUIRED in `.env.example`).
+- MUST: Secrets that may only be absent in local/dev (internal API key, webhook HMAC secret) are required whenever `APP_ENV`/`DEPLOYMENT_ENV` is not in the local/dev set (CFG-04).
+- MUST: Mirror every required variable in `.env.example` with a `REQUIRED` marker and a placeholder, never a real value; derive health/readiness env checks from the same schema.
+- UNRESOLVED: Reference repos name Redis variables differently (`AZURE_CACHE_FOR_REDIS_*` vs `REDIS_HOST_NAME`/`REDIS_ACCESS_KEY` with fallbacks) (C-03/C-11). Follow the target repo; do not rename existing variables.
+impl:
+- Add the key to the schema (with message), `.env.example`, README table and the test setup file.
+- Read it only through the validated config object (or `process.env` after validation in legacy files).
+- Add a test for the missing/blank case.
+ex: ts | Schema excerpt (reference)
+const baseSchema = z.object({
+  APP_ENV: z.string().optional().default("production"),
+  AZURE_SERVICE_OAUTH_AUDIENCE: z.string().min(1, "AZURE_SERVICE_OAUTH_AUDIENCE is required"),
+  MONGO_DB_CONNECTION_STRING: z.string().min(1, "MONGO_DB_CONNECTION_STRING is required"),
+});
+export function validateEnv(env = process.env) {
+  const r = baseSchema.safeParse(env);
+  if (!r.success) throw new Error("Invalid/missing environment configuration:\n - " + r.error.issues.map((i) => i.path.join(".") + ": " + i.message).join("\n - "));
+  return r.data;
+}
+/ex
+fail:
+- Missing required variable -> throw before listening; message names keys only.
+test:
+- Each required key missing/blank; production vs local rules; memoization reset hook.
+anti:
+- `process.env.X!` non-null assertions.
+- Defaults for secrets.
+- Different required lists in schema, health check and `.env.example`.
+check:
+- Schema + `.env.example` + README + tests; fail-fast; env-aware strictness.
+
+@@ optional-environment-variables | Optional Environment Variables
+ev: E1
+cls: VERIFIED (CFG-05, CFG-06)
+std: CFG-05, CFG-06, CFG-01
+rel: configuration-defaults, feature-flag-management, configuration-validation, required-environment-variables
+d: Use when adding tunables (timeouts, pool sizes, TTLs, batch sizes, poll intervals), optional integrations or toggles - safe explicit defaults, strict validation of supplied values, disabled-vs-misconfigured semantics.
+scope: Optional environment variables and their defaults.
+app: Node services.
+purpose: Operators can tune behaviour without code changes while invalid values are rejected rather than silently ignored.
+when:
+- Adding a timeout/TTL/limit.
+- Making an integration optional.
+org:
+- MUST: Defaults are explicit in code, mirrored in `.env.example` (commented `# NAME=default` or with value), and documented by units in the name (`_MS`, `_SECONDS`, `_DAYS`).
+- MUST: A supplied optional value is parsed and range-checked (`getEnvInt`/Zod coerce with min/max); a present-but-invalid value fails startup or falls back with a `warn` per the service's helper - never silently becomes `NaN`.
+- MUST: An optional integration is **disabled** when its variable group is absent and **misconfigured** (startup error) when partially present (for example secret without URL).
+- VERIFIED: Examples - `CONFIG_SERVICE_TIMEOUT_MS=5000`, `REDIS_COMMAND_TIMEOUT_MS`, `RATE_LIMIT_STANDARD_PER_MIN=300`, `RATE_LIMIT_ADMIN_PER_MIN=5`, `USAGE_EVENT_OUTBOX_MAX_ATTEMPTS`, `WEBHOOK_DELIVERY_MAX_ATTEMPTS`, `MONGO_MAX_POOL_SIZE=50`, `LOG_LEVEL=info`.
+- MUST: Do not hard-code values that operators need to tune (reference defect: Redis 150 ms command timeout and breaker thresholds).
+impl:
+- Choose name with prefix and unit; set default; add validation bounds; document.
+ex: ts | Typed helper (reference style)
+function getEnvInt(name: string, def: number, min = 0): number {
+  const raw = process.env[name]?.trim(); if (!raw) return def;
+  const n = Number(raw); if (!Number.isInteger(n) || n < min) throw new Error(name + " must be an integer >= " + min);
+  return n;
+}
+const timeoutMs = getEnvInt("CONFIG_SERVICE_TIMEOUT_MS", 5000, 1);
+/ex
+fail:
+- Invalid optional value: fail startup (preferred) or documented fallback with `warn`.
+test:
+- Default, valid override, invalid, boundary.
+anti:
+- `parseInt(process.env.X)` without NaN check.
+- Booleans via truthiness (`"false"` is truthy).
+check:
+- Name/unit; default; validation; docs.
+
+@@ configuration-management | Configuration Management
+ev: E1
+cls: VERIFIED (CFG-01..CFG-07)
+std: CFG-01, CFG-02, CFG-03, CFG-05, CFG-06, CFG-07
+rel: configuration-validation, configuration-defaults, configuration-precedence, environment-specific-configuration, configuration-security, feature-flag-management
+d: Use when organizing, reading or documenting service configuration as a whole - one config module/schema, no scattered process.env reads, env-example, README table, test setup. Entry skill for the configuration category.
+scope: Configuration architecture of a service.
+app: Node services.
+purpose: Single, discoverable, validated configuration surface.
+when:
+- Starting a service.
+- Finding `process.env` reads scattered across files.
+org:
+- MUST: One configuration source of truth per service (env schema and/or `config.ts`), read via a typed object; no new ad-hoc `process.env` reads in feature code.
+- MUST: `.env` / `.env.*` git-ignored; `.env.example` committed and complete; README lists variables by group.
+- MUST: Configuration is grouped by integration prefix (`REDIS_*`, `SERVICE_BUS_*`, `AZURE_QUEUE_*`, `WEBHOOK_*`, `NOTIFICATION_*`, `RATE_LIMIT_*`, `ENTRA_*`/`AZURE_SERVICE_OAUTH_*`).
+- VERIFIED: Config object sections (reference service B): `port, security, deployment, configService, redis, serviceBus, azureQueue, auth, idempotency, usageOutbox, reconciler, ...`.
+- VERIFIED: Test environments stub variables in a setup file (`test/setup.ts`).
+impl:
+- Add the variable in schema/config, example, docs, test setup in one change.
+- Prefer injecting config values into constructors for testability.
+ex: ts | Config section (flat reference style)
+export const config = {
+  port: getEnvInt("PORT", 3001),
+  configService: { baseUrl: getEnv("CONFIG_SERVICE_BASE_URL", "http://localhost:3000"), timeoutMs: getEnvInt("CONFIG_SERVICE_TIMEOUT_MS", 5000) },
+};
+/ex
+fail:
+- Config load errors are startup errors (see `configuration-validation`).
+test:
+- `config.*.test.ts` style tests that re-import the module with different env (`vi.resetModules()`), or reset memoized env.
+anti:
+- `process.env` in services/controllers.
+- Multiple config modules.
+check:
+- Single source; example; docs; tests.
+
+@@ configuration-validation | Configuration Validation
+ev: E1
+cls: TECH / UNRESOLVED (C-03)
+std: CFG-02, CFG-04, CFG-05
+rel: required-environment-variables, startup-dependency-validation, optional-environment-variables, service-registration-lifecycle, health-endpoint-implementation
+d: Use when validating configuration at startup - declarative schema, type/format/cross-field checks, environment-aware rules, aggregated errors, memoization and the test hook. Dependency reachability checks are in startup-dependency-validation.
+scope: Validating configuration values.
+app: Zod (aliased reference) or explicit validators (flat reference).
+purpose: Fail fast with clear, secret-free errors.
+when:
+- Changing required/optional config.
+- Writing startup code.
+org:
+- MUST: Validate before the app module graph loads (`validateEnv()` in `server.ts` before `import app`); memoize the result and expose `resetValidatedEnvCache()` for tests.
+- MUST: Aggregate all issues into one error; never print values.
+- MUST: Cross-field/environment rules (for example `INTERNAL_API_KEY` required unless `isLocalOrDevEnv(APP_ENV)`) live in the validator, not in request handlers.
+- MUST: `isLocalOrDevEnv` set: `local, development, devtest, staging, customerdev` (reference). Production (default when unset) is the strict mode.
+- TECH: Zod in repos that already depend on it; hand-written `getEnv*` helpers where it is not present. Do not add a validation library without approval.
+- MUST: Do not leave a boot guard commented out (reference defect: webhook-secret guard).
+impl:
+- Extend the schema; add `superRefine`/post-parse checks for environment-specific rules.
+- Call once in bootstrap; pass the result to consumers.
+ex: ts | Environment-conditional guard
+const isLocalOrDev = isLocalOrDevEnv(parsed.APP_ENV);
+if (!isLocalOrDev && !parsed.INTERNAL_API_KEY?.trim()) throw new Error("INTERNAL_API_KEY is required outside local/dev (APP_ENV=" + parsed.APP_ENV + ")");
+/ex
+fail:
+- Validation exceptions exit non-zero with a log line listing keys.
+test:
+- Invalid/missing/environment-conditional cases; memoization.
+anti:
+- Validating lazily on first use.
+- Throwing per-field errors one at a time.
+check:
+- Before app import; aggregated; env-aware; tested.
+
+@@ configuration-defaults | Configuration Defaults
+ev: E1
+cls: VERIFIED (CFG-05)
+std: CFG-05, CFG-03
+rel: optional-environment-variables, configuration-validation, environment-specific-configuration
+d: Use when choosing default values for configuration - safe-by-default policy, production default when the environment name is unset, documented numeric defaults and the rule that defaults never apply to secrets.
+scope: Default value policy.
+app: Any service.
+purpose: Defaults that are safe, explicit and consistent.
+when:
+- Adding a config key.
+- Reviewing literal fallbacks (`|| "1"`).
+org:
+- MUST: Unset environment name defaults to **production** strictness (`APP_ENV`/`DEPLOYMENT_ENV` default `production`).
+- MUST: Defaults are safe: toggles default off or to the more restrictive behaviour (`FEATURE_DUAL_READ=false`, non-prod enforcement `record_only` defaults only for named non-prod environments, `AUTH_FAIL_OPEN=false`).
+- MUST: No defaults for secrets, URIs of production systems, or identity constants (error-code constants are code constants, not env).
+- VERIFIED: Local convenience defaults (localhost URLs, local Redis without password) exist but are guarded: non-local hosts require credentials.
+- VERIFIED: Every default is mirrored in `.env.example` ("every value shown is the default unless marked REQUIRED").
+impl:
+- Put the default next to the read; add comment with rationale for non-obvious values.
+ex: ts | Safe defaults
+const deploymentEnv = (process.env.DEPLOYMENT_ENV ?? process.env.APP_ENV ?? "production").trim().toLowerCase();
+const authFailOpen = (process.env.AUTH_FAIL_OPEN ?? "false") === "true";
+/ex
+fail:
+- N/A (see validation).
+test:
+- Defaults under empty env.
+anti:
+- `process.env.SERVICE_CODE || "02"`.
+- Default `true` for security bypasses.
+check:
+- Safe, documented, mirrored.
+
+@@ configuration-precedence | Configuration Precedence
+ev: E2
+cls: VERIFIED (documented in `.env.example`) / CONFIG
+std: CFG-01, CFG-03, CFG-05
+rel: configuration-management, environment-specific-configuration, configuration-defaults
+d: Use when the same setting can come from several sources (process environment, .env, .env.local, legacy/alias variables, code defaults) and you must define which wins and how aliases and legacy flags behave.
+scope: Source precedence and alias handling.
+app: Node services using dotenv.
+purpose: Predictable overrides and safe migration of renamed variables.
+when:
+- Renaming/deprecating a variable.
+- Debugging "which value is used".
+org:
+- VERIFIED: Order (highest first) - real process environment (orchestrator/App Service settings) > `.env.local` (per-machine overrides, documented in `.env.example`) > `.env` (shared dev) > code defaults. `dotenv` never overrides variables already present in the process environment.
+- VERIFIED: Alias/legacy precedence is explicit and coded: `REDIS_HOST_NAME` then `AZURE_CACHE_FOR_REDIS_HOST_NAME` then `localhost`; `ENFORCEMENT_DEFAULT` (explicit) then legacy `ENFORCEMENT_BLOCKING_ENABLED`/`USAGE_LIMIT_ENFORCEMENT_ENABLED` then environment default.
+- MUST: When adding an alias, keep the old name working, document the order in `.env.example`, mark the old one `@deprecated`, and log a `warn` when only the legacy name is used.
+- UNRESOLVED: `.env.local` loading is documented in the enforcement template; verify the target's `dotenv` setup before relying on it.
+impl:
+- Implement alias resolution in one helper; test each branch.
+ex: ts | Alias chain
+const redisHost = process.env.REDIS_HOST_NAME?.trim() || process.env.AZURE_CACHE_FOR_REDIS_HOST_NAME?.trim() || "localhost";
+/ex
+fail:
+- Conflicting values between aliases -> prefer the new name and `warn`.
+test:
+- All combinations of alias presence.
+anti:
+- Undocumented implicit fallbacks.
+- Removing a legacy name without a deprecation window.
+check:
+- Order documented and tested.
+
+@@ environment-specific-configuration | Environment-Specific Configuration
+ev: E1
+cls: VERIFIED (CFG-03)
+std: CFG-03, CFG-04, CFG-06
+rel: configuration-security, configuration-defaults, environment-deployment-standards, fail-open-fail-closed-policy
+d: Use when behaviour or strictness depends on the environment (local, devtest, staging, customerdev, production) - environment names, non-enforcing defaults, relaxed local security, branch-to-environment mapping.
+scope: Environment model and per-environment behaviour.
+app: Azure-hosted services.
+purpose: Same code runs everywhere; only configuration and strictness differ, and production is never accidentally relaxed.
+when:
+- Adding behaviour that differs by environment.
+- Adding a bypass for local development.
+org:
+- MUST: Environment names: `local`, `development`, `devtest`, `staging`, `customerdev`, `production`; variable `APP_ENV` (reference service A) / `DEPLOYMENT_ENV` with `APP_ENV` fallback (reference service B); default `production`.
+- MUST: Branch mapping: `devtest` -> devtest, `staging` -> staging, `main` -> production; pipeline variable groups per environment.
+- MUST: Strictness is derived from the environment name through one helper (`isLocalOrDevEnv`, `NON_ENFORCING_DEPLOYMENT_ENVS`), not scattered string compares.
+- MUST NOT: add new "relax security" switches. Existing `SECURITY_RELAXED_FOR_DEVNDEMO` and `AUTH_FAIL_OPEN` are flagged risks (C-12): they must never be honoured in production (detect Azure App Service via `WEBSITE_INSTANCE_ID`) and must log a loud warning at startup.
+- VERIFIED: Non-production defaults to **record-only** enforcement (record usage, never block) via `ENFORCEMENT_DEFAULT`.
+impl:
+- Add the behaviour behind the helper; document in `.env.example` per environment.
+ex: ts | One helper
+export const nonLocalEnvs = new Set(["local", "development", "devtest", "staging", "customerdev"]);
+export const isLocalOrDevEnv = (e?: string) => nonLocalEnvs.has((e ?? "").toLowerCase());
+/ex
+fail:
+- Unknown environment name -> treat as production.
+test:
+- Each environment value; production guard when relax flag set.
+anti:
+- `if (NODE_ENV === "production")` scattered with different meanings.
+- Environment-specific code branches in business logic.
+check:
+- Helper used; defaults safe; docs per env.
+
+@@ feature-flag-management | Feature Flag Management
+ev: E2
+cls: VERIFIED (CFG-06)
+std: CFG-06, CFG-05, API-08
+rel: optional-environment-variables, api-versioning, outbox-pattern, environment-specific-configuration
+d: Use when adding, rolling out or removing runtime toggles - environment boolean flags (dual-read migration, outbox enable, worker enable, channel enable, debug routes), naming, defaults and lifecycle. No flag service exists.
+scope: Environment-based feature flags and operational toggles.
+app: Node services.
+purpose: Reversible, explicit rollout controls.
+when:
+- Rolling out risky behaviour.
+- Enabling workers/channels.
+org:
+- MUST: Flags are environment variables read through one accessor (`isDualReadEnabled()`), parsed strictly (`"true"` only), default **off** (safe/legacy), documented in `.env.example` with purpose and removal condition.
+- VERIFIED: Examples: `FEATURE_DUAL_READ`, `USAGE_EVENT_OUTBOX_ENABLED`, `USAGE_EVENT_OUTBOX_WORKER_ENABLED`, `NOTIFICATION_{EMAIL,PORTAL,WHATSAPP,WEBHOOK}_ENABLED`, `WEBHOOK_DELIVERY_WORKER_ENABLED`, `DEBUG_ROUTES_ENABLED`, `ENFORCEMENT_DEFAULT`.
+- MUST: Debug/diagnostic routes behind a flag are also behind authentication (`debug-route-auth`) and never enabled in production by default.
+- GENERIC: Record owner and removal date in the flag's comment; delete flags after rollout.
+- MUST: Do not introduce a third-party flag service without approval.
+impl:
+- Add accessor + default off + docs; gate code paths; log the active flag state at startup (without secrets).
+ex: ts | Accessor
+export const isDualReadEnabled = () => (process.env.FEATURE_DUAL_READ ?? "false").toLowerCase() === "true";
+/ex
+fail:
+- Flag read errors cannot occur; accessor is total.
+test:
+- On/off paths both covered.
+anti:
+- Flags that change security posture.
+- Permanent flags.
+check:
+- Default off; documented; both paths tested; removal planned.
+
+@@ configuration-security | Configuration Security
+ev: E2
+cls: VERIFIED (CFG-04, CFG-07)
+std: CFG-04, CFG-07, SEC-06, OBS-03
+rel: secrets-management, required-environment-variables, sensitive-data-masking-in-logs, internal-package-management, data-protection
+d: Use when handling secrets and sensitive configuration - sourcing, validation, masking, logging, Docker/CI injection, local files, and fail-closed behaviour when a secret is missing.
+scope: Protecting configuration values.
+app: Node services on Azure.
+purpose: Secrets never leak and a missing secret never opens an endpoint.
+when:
+- Adding a credential/key/connection string.
+- Reviewing `.env`, Dockerfile, pipeline.
+org:
+- MUST: Secrets come only from the environment (secret store injected by the platform); never from source, fixtures or logs. Reference gap: no Key Vault integration yet (`// TODO: read secret from keyvault`) - do not invent one.
+- MUST: `.env`, `.env.*` are git-ignored; only `.env.example` with placeholders is committed; never copy real values from a working `.env` into docs, tests or skills.
+- MUST: Log configuration by key name only; mask URIs (a local `maskConnectionUri` helper) and key suffixes (`maskApiKeyForLog`); extend `MASK_CONFIG` for service-specific secret fields (`key`, `endpoint`, `connectionString`, `conn_str`).
+- MUST: Missing secret outside local/dev -> startup failure (config) or fail-closed rejection (request), never open (CFG-04).
+- MUST: Package-registry token is `${AuthToken}` only; Docker deletes `.npmrc` after install.
+- VERIFIED: Outbound Azure auth prefers Managed Identity over secrets for HTTP calls (`azure-managed-identity`); messaging still uses connection strings (C-13).
+impl:
+- Add placeholder to `.env.example`; add to mask config if loggable object field; verify CI/pipeline injection.
+ex: text | .env.example entry
+# Internal API keys (header x-internal-api-key) - REQUIRED outside local/dev
+INTERNAL_API_KEY_ADMIN_PORTAL=
+/ex
+fail:
+- Secret read failures never print values.
+sec:
+- Rotate secrets found in repos immediately and report (do not repeat their values).
+test:
+- Secret absent in prod mode -> startup/request rejection; log capture contains no secret.
+anti:
+- Committed `.env`.
+- Default secret values.
+- Logging `process.env`.
+check:
+- Source; masking; fail-closed; CI injection.
+
+@@ startup-dependency-validation | Startup Dependency Validation
+ev: E2
+cls: VERIFIED (CFG-02, ARCH-03) single repo
+std: CFG-02, ARCH-03, OBS-04
+add: Verifying dependency reachability (upstream service, Redis, Mongo, Service Bus, queues) at startup with remediation hints and exit(1) is implemented in reference service B and is distinct from env-variable validation.
+rel: configuration-validation, service-registration-lifecycle, liveness-readiness-checks, dependency-failure-handling, health-endpoint-implementation
+d: Use when a service should verify its critical dependencies are reachable before listening - Redis ping, Mongo ping, upstream reachability, queue provisioning, broker connectivity - and refuse to start with actionable messages.
+scope: Reachability checks at boot.
+app: Node services.
+purpose: Detect misconfigured infrastructure at deploy time instead of at first request.
+when:
+- Adding a mandatory dependency.
+- Diagnosing crash loops after deploy.
+org:
+- MUST: `validateStartup()` runs after config validation and before `listen`; it checks each **mandatory** dependency with a bounded timeout and collects errors; any error -> log all with remediation hints and `process.exit(1)`.
+- MUST: Distinguish connection failures (fail) from "reachable but unexpected status" (warn): the reference accepts any HTTP status from the upstream health URL and fails only on `ECONNREFUSED/ETIMEDOUT/ENOTFOUND`.
+- MUST: Optional dependencies (non-mandatory broker, notifications) warn, do not block (`SERVICE_BUS_MANDATORY`).
+- VERIFIED: Hints name the variables to check (`REDIS_HOST_NAME`, `REDIS_ACCESS_KEY`, `CONFIG_SERVICE_BASE_URL`); queue existence is ensured at startup and marked ready (`markThresholdJobsQueueReady`).
+- GENERIC: Do not put upstream *services* in readiness probes (cascade risk) - startup validation is the place for them.
+impl:
+- Collect errors in an array; ping Redis (`PING` -> `PONG`), Mongo (`ping` command), broker (create sender), queue (create-if-missing).
+- Log summary; exit non-zero on any mandatory failure.
+ex: ts | Collect-then-fail
+const errors: string[] = [];
+try { if ((await getRedis().ping()) !== "PONG") errors.push("Redis: unexpected ping response. Check REDIS_HOST_NAME, REDIS_PORT, REDIS_ACCESS_KEY"); }
+catch (e) { errors.push("Redis: connection failed - " + (e as Error).message); }
+if (errors.length) { logger.error({ errorCount: errors.length, errors }, "Startup validation failed"); process.exit(1); }
+/ex
+fail:
+- Startup validation failure exits(1) so the orchestrator restarts/rolls back.
+sec:
+- Error strings must not include credentials or full URIs (mask).
+test:
+- Each dependency failing; optional dependency failing; success path.
+anti:
+- Validation after `listen`.
+- Failing on non-2xx from a service without a health route.
+- Logging connection strings.
+check:
+- Mandatory vs optional; timeouts; hints; exit code; masked.

@@ -1,0 +1,575 @@
+@@ machine-authentication | Machine Authentication
+ev: E1
+cls: VERIFIED (SEC-01, SEC-02, SEC-03)
+std: SEC-01, SEC-02, SEC-03, PKG-01
+rel: service-to-service-authentication, azure-managed-identity, client-credentials-flow, internal-api-key-authentication, jwt-validation
+d: Use when a non-human caller (service, job, portal backend) must authenticate to or call a service. Chooses the organization's mechanisms - Entra app tokens via Managed Identity for HTTP APIs and x-internal-api-key with a caller header for internal endpoints.
+scope: Choosing and applying machine credentials.
+app: Azure-hosted Node services.
+purpose: Callers are identified and authorized without human credentials.
+when:
+- Adding a service-to-service endpoint or caller.
+org:
+- MUST: Entra-protected APIs: caller obtains a token with `generateAuthToken(scope)` (`@inextlabs/azure-oauth`, `DefaultAzureCredential`) and sends `Authorization: Bearer`; callee validates (`jwt-validation`) including audience and **app role**.
+- MUST: Internal-only endpoints additionally accept/require `x-internal-api-key` (+ `x-internal-api-caller`) validated fail-closed (`internal-api-key-authentication`).
+- MUST: Machine identities are named per caller (`<service-name>`, `<portal-name>`); one key per caller (`INTERNAL_API_KEY_<CALLER>`).
+- MUST NOT: invent new schemes (basic auth, shared passwords, custom HMAC headers) without approval.
+impl:
+- Decide token vs key vs both from the endpoint's exposure; implement per the linked skills.
+ex: text | Choice
+public/service API (Entra)  -> Bearer token + app role
+internal notification API    -> x-internal-api-key + x-internal-api-caller (+ correlation)
+/ex
+fail:
+- 401 unauthenticated / 403 caller not permitted via catalog.
+test:
+- Each credential type valid/invalid.
+anti:
+- Shared keys across callers.
+- Unauthenticated internal routes.
+check:
+- Mechanism chosen; fail-closed; caller named.
+
+@@ service-to-service-authentication | Service-to-Service Authentication
+ev: E1
+cls: VERIFIED (SEC-02, SEC-03, CTX-02, INT-01)
+std: SEC-02, SEC-03, CTX-02, INT-01, CFG-04
+rel: machine-authentication, azure-managed-identity, external-api-client, internal-api-key-authentication, request-header-management, correlation-id-management
+d: Use when one organizational service calls another - outbound headers (bearer or internal key, caller, correlation), inbound validation, fail-closed token acquisition, and local/dev behaviour. Canonical skill for inter-service auth.
+scope: Outbound and inbound inter-service authentication.
+app: HTTP services.
+purpose: Every internal call is authenticated and traceable.
+when:
+- Calling another service.
+- Exposing an internal endpoint.
+org:
+- MUST **outbound (Entra)**: interceptor adds `Authorization: Bearer <generateAuthToken()>` when `AZURE_SERVICE_OAUTH_SCOPE` is set; token failure aborts (never unauthenticated).
+- MUST **outbound (internal key)**: headers `x-internal-api-key`, `x-internal-api-caller: <service-name>`, `x-correlation-id`; skip with a log when the target URL or key is unset (best-effort), but fail closed for blocking paths.
+- MUST **inbound**: authenticate every internal route (`requireInternalApiKey(allowedCallers?)` / `validateAuthToken()`); 401 missing/invalid; 403 caller not permitted; 503 when no keys configured (misconfiguration) - never open.
+- VERIFIED: Callers register in an `INTERNAL_API_CALLER_REGISTRY`; the declared `x-internal-api-caller` that disagrees with the key's caller is logged as a mismatch.
+- UNRESOLVED (C-12): relax flags exist locally only; never in production.
+impl:
+- Reuse `http-client-management` interceptor; mount inbound middleware per router.
+ex: ts | Inbound route guard
+router.post("/internal/subscription-changed", requireInternalApiKey(["<caller-id>"]), validate(SubscriptionChangedSchema, "body"), handler);
+/ex
+fail:
+- Standard envelope with catalog `UNAUTHORIZED` / `FORBIDDEN`.
+sec:
+- Constant-time compare; mask key in logs.
+test:
+- Valid key, wrong key, wrong caller, missing config (503), local relax disabled in prod.
+anti:
+- Fail-open when the key is unset.
+- Forwarding user tokens between services.
+check:
+- Outbound/inbound; fail-closed; caller header; correlation.
+
+@@ oauth-2-0 | OAuth 2.0
+ev: E1
+cls: VERIFIED (SEC-01, SEC-02) via Entra
+std: SEC-01, SEC-02, PKG-01
+rel: client-credentials-flow, jwt-validation, azure-managed-identity, authentication, service-to-service-authentication
+d: Use when working with OAuth 2.0 in the organization's Azure estate - Microsoft Entra ID as the authorization server, resource audience/scope, app roles, JWKS-based validation. Interactive flows and custom OAuth servers are not evidenced.
+scope: OAuth 2.0 usage in services.
+app: Entra ID.
+purpose: Standards-based authentication.
+when:
+- Adding token-protected APIs or callers.
+org:
+- VERIFIED: Entra tenant(s) (`AZURE_SERVICE_OAUTH_TENANT_IDS`/`ENTRA_TENANT_ID`), audience (`AZURE_SERVICE_OAUTH_AUDIENCE`/`ENTRA_AUDIENCE`), issuer (`https://login.microsoftonline.com/{tid}/v2.0` / `ENTRA_ISSUER`), JWKS (`.../discovery/v2.0/keys`/`ENTRA_JWKS_URI`), RS256, app role (`AZURE_SERVICE_OAUTH_APP_ROLE`), scope for callers (`AZURE_SERVICE_OAUTH_SCOPE`, `api://.../.default`).
+- MUST: Use `@inextlabs/azure-oauth` for validation and token acquisition where installed; do not add `passport`, `oauth2-server` or other OAuth libraries.
+- GENERIC: Authorization code/PKCE for end-user flows is out of scope of the reference repos; request approval.
+impl:
+- Configure env; use the package functions; document audience/role per API.
+ex: text | Env contract (Entra)
+AZURE_SERVICE_OAUTH_TENANT_IDS, AZURE_SERVICE_OAUTH_AUDIENCE, AZURE_SERVICE_OAUTH_APP_ROLE  (validated at startup)
+/ex
+fail:
+- 401/403 catalog errors.
+test:
+- Valid/expired/wrong audience/wrong role.
+anti:
+- Accepting tokens from any tenant.
+check:
+- Env; package; role.
+
+@@ client-credentials-flow | Client Credentials Flow
+ev: E1
+cls: VERIFIED (SEC-02)
+std: SEC-02, CFG-07, INT-01
+rel: azure-managed-identity, oauth-2-0, service-to-service-authentication, machine-authentication, external-api-client
+d: Use when a service acquires an app-only token to call another API. The organization uses DefaultAzureCredential (Managed Identity in Azure, developer credential locally) through generateAuthToken(scope), not client-secret code.
+scope: App-only token acquisition.
+app: Node with `@inextlabs/azure-oauth`.
+purpose: Machine-to-machine access without secrets in code.
+when:
+- Calling an Entra-protected API.
+org:
+- MUST: `generateAuthToken(scope?)` -> `new DefaultAzureCredential().getToken(scope ?? AZURE_SERVICE_OAUTH_SCOPE)`; error "AZURE_SERVICE_OAUTH_SCOPE is not configured" when no scope; wrap failure as typed unavailable error at the HTTP client.
+- MUST: Tokens are not stored by the application (SDK caches); never log them.
+- MUST: Do not implement the client-secret grant by hand; if a client secret is unavoidable, request approval and store in the secret platform.
+- GENERIC: Acquire per request is acceptable; avoid fetching more often than the SDK cache requires.
+impl:
+- Use the shared interceptor from `external-api-client`.
+ex: ts | Token acquisition
+const token = await generateAuthToken();     // uses AZURE_SERVICE_OAUTH_SCOPE
+headers["Authorization"] = "Bearer " + token;
+/ex
+fail:
+- Failure -> abort request, `error` log without token.
+sec:
+- Least privilege app role on the target API.
+test:
+- Mock `generateAuthToken` to throw -> no HTTP call made.
+anti:
+- Hand-rolled token endpoint calls.
+check:
+- Interceptor; failure behaviour; no token logging.
+
+@@ azure-managed-identity | Azure Managed Identity
+ev: E1
+cls: VERIFIED (SEC-02, CFG-07) / messaging gap C-13
+std: SEC-02, CFG-07, INT-06
+rel: client-credentials-flow, azure-service-connection-management, secrets-management, azure-sdk-client-management
+d: Use when authenticating to Azure-protected resources without secrets - system/user-assigned Managed Identity via DefaultAzureCredential, role assignments, local developer fallbacks, and the current limits (HTTP APIs yes, Service Bus/Queue/Redis/Mongo not yet).
+scope: Managed Identity usage.
+app: Azure-hosted Node services.
+purpose: Secretless access wherever supported.
+when:
+- Authenticating to Azure/Entra resources.
+org:
+- VERIFIED: Used for outbound upstream-service calls (token with `AZURE_SERVICE_OAUTH_SCOPE`); local runs use developer credentials via `DefaultAzureCredential` or run unauthenticated when the scope is unset in non-production.
+- MUST: New Azure integrations default to Managed Identity when the SDK supports it and approval exists; otherwise follow `azure-service-connection-management`.
+- UNRESOLVED (C-13): Service Bus/Queue Storage/Redis/Mongo use connection strings/keys; migration to identity-based access is pending approval.
+- MUST: Document required role assignments (e.g. "Azure Service Bus Data Sender") in `deployment-documentation`.
+impl:
+- Use `DefaultAzureCredential` only through the shared package for tokens; for SDK clients pass the credential object when approved.
+ex: ts | GENERIC SDK identity form (pending approval for messaging)
+const sb = new ServiceBusClient(config.serviceBus.fullyQualifiedNamespace, new DefaultAzureCredential());
+/ex
+fail:
+- Identity failures are config/RBAC problems: log with hint (check role assignment), exit at startup if mandatory.
+test:
+- Mock credential.
+anti:
+- Embedding client secrets to emulate MI.
+check:
+- Role assignments documented; fail-closed.
+
+@@ jwt-validation | JWT Validation
+ev: E1
+cls: TECH / UNRESOLVED (C-05)
+std: SEC-01, ERR-02, API-10
+rel: authentication, authorization, role-based-access-control, oauth-2-0, middleware-request-pipeline
+d: Use when validating bearer JWTs in a service - issuer, audience, signature via JWKS (RS256), tenant allow-list, app roles/scopes, allowed caller app IDs, and client-claim binding. Follows the target repo's implementation (azure-oauth package or jose middleware) and flags their defects.
+scope: Token validation.
+app: Express with Entra ID.
+purpose: Only intended callers pass.
+when:
+- Adding protected routes; reviewing auth code.
+org:
+- MUST: Validate signature (JWKS), `iss`, `aud`, `exp`, algorithm RS256; reject otherwise with 401 in the standard envelope.
+- TECH (reference service A): `validateAuthToken()` from `@inextlabs/azure-oauth` per route - tenant allow-list (`tid/tenantId/tenant/azp` in `AZURE_SERVICE_OAUTH_TENANT_IDS`) -> `express-jwt` with `jwks-rsa` -> required app role in `roles` -> `req.auth`. Known package defects: logs tenant ID via `console.log`, error bodies without `numericCode`, JWKS URL derived from an unverified claim (mitigated only by the allow-list) - require the allow-list to be non-empty.
+- TECH (reference service B): `jose` `createRemoteJWKSet` + `jwtVerify({ issuer, audience })`; `ALLOWED_APP_IDS` (azp/appid), `ALLOWED_ROLES` (roles or scp); extracts `roles`, `scopes`; **client-claim binding**: every `clientId`/`tenantId` in body/query must equal the claim named by `AUTH_CLIENT_CLAIM` (`AUTH_ENFORCE_CLIENT_BINDING`); health is exempt.
+- MUST: Auth failures use catalog errors (`UNAUTHORIZED` 401, `FORBIDDEN` 403, `CLIENT_CONTEXT_MISMATCH` 403).
+- UNRESOLVED (C-05): implementation owner; do not write a third implementation in services that already use one; do not add `jsonwebtoken`/`passport`.
+impl:
+- Mount auth after correlation and before validation; test with signed fixtures.
+ex: ts | Verification (jose, reference)
+const { payload } = await jwtVerify(token, getJwks()!, { audience: config.auth.audience, issuer: config.auth.issuer });
+if (allowedAppIds.length && !allowedAppIds.includes(String(payload.azp ?? payload.appid))) throw V2Errors.forbidden("Calling application is not allowlisted");
+/ex
+fail:
+- JWKS unreachable -> 503 (fail closed) unless explicit relax flag in local.
+sec:
+- Never disable audience/issuer checks; never accept `alg: none`; cache JWKS.
+test:
+- Valid, expired, wrong aud/iss, bad signature, disallowed app/role, mismatched client claim.
+anti:
+- Decoding without verifying.
+- Accepting any tenant.
+check:
+- iss/aud/exp/sig; roles; binding; envelope.
+
+@@ authentication | Authentication
+ev: E1
+cls: VERIFIED (SEC-01, SEC-03, ARCH-05)
+std: SEC-01, SEC-03, ARCH-05, CFG-04, API-03
+rel: jwt-validation, internal-api-key-authentication, authorization, middleware-request-pipeline, api-security
+d: Use when deciding how requests are authenticated - authenticate every non-probe route, choose Entra bearer vs internal key vs webhook signature by route class, order middleware, and keep it fail-closed.
+scope: Authentication policy per route class.
+app: Express.
+purpose: No route is unauthenticated by omission.
+when:
+- New routers/routes; reviewing route files.
+org:
+- MUST: Route classes: public/service API -> Entra bearer; internal API -> internal key (plus bearer where required); webhook ingress -> signature; probes -> none (documented exception).
+- MUST: Mount authentication per router (explicit in the route file), after correlation, before validation.
+- MUST: Fail closed on missing configuration outside local/dev (`CFG-04`).
+- MUST: Each route file's middleware chain is visible in review; imported-but-unused auth middleware is a defect (reference: `requireRole`, `principalMiddleware` imported, never invoked).
+- VERIFIED (defect to avoid): internal-config routes without the key middleware; legacy v1 routes without token auth; fail-open internal auth in v1.
+impl:
+- Add middleware per route; add a test that unauthenticated calls get 401.
+ex: ts | Route chain
+router.get("/configs/:id", validateAuthToken(), validate(IdSchema, "params"), getConfig);
+/ex
+fail:
+- 401 envelope.
+test:
+- Table test: every route returns 401/403 without credentials.
+anti:
+- Global "skip auth if path includes health" matching substrings (use exact paths).
+check:
+- All routes classed; chain explicit; test.
+
+@@ authorization | Authorization
+ev: E2
+cls: VERIFIED (SEC-01, SEC-07) partial
+std: SEC-01, SEC-07, API-10
+rel: role-based-access-control, jwt-validation, authentication, api-security, security-review
+d: Use when deciding what an authenticated caller may do - coarse service-level app-role gate, allowed caller app IDs, tenant/client binding, and (only when needed) per-operation roles.
+scope: Access decisions after authentication.
+app: Express.
+purpose: Least privilege.
+when:
+- Adding operations with different privilege levels or tenant data.
+org:
+- MUST: Baseline gate: required app role (`AZURE_SERVICE_OAUTH_APP_ROLE`) and/or `ALLOWED_ROLES`/`ALLOWED_APP_IDS`.
+- MUST: Tenant isolation: the caller's client claim must match the requested client identifiers (`CLIENT_CONTEXT_MISMATCH` 403).
+- CONFIG: Per-operation roles and tenant scoping are **conditional** - implement and test them if the service needs them; otherwise ship none (reference `requireRole`/`enforceTenantScope` are inert: imported, never invoked, no-op because `req.principal` is never populated).
+- MUST: Audit `actor` comes from the verified principal.
+impl:
+- Create the principal middleware only with tests proving it populates `req.principal`.
+ex: ts | Binding check
+for (const id of requestClientIds(req)) if (id !== principal.clientClaimValue) throw V2Errors.clientMismatch();
+/ex
+fail:
+- 403 envelope; log reason without claim values.
+test:
+- Matching and mismatching IDs (body/query/both).
+anti:
+- Shipping inert authorization middleware.
+- Trusting client-supplied tenant IDs.
+check:
+- Gate; binding; actor; tests.
+
+@@ role-based-access-control | Role-Based Access Control
+ev: E3
+cls: PARTIAL (inert in A; roles check in B) / CONFIG
+std: SEC-07, SEC-01
+rel: authorization, jwt-validation, audit-logging, security-review
+d: Use when access depends on roles - Entra app roles in the token roles claim, mapping roles to operations, and wiring/testing role checks. Reference per-operation RBAC middleware is inert; use only the contract.
+scope: Role checks.
+app: Express with Entra app roles.
+purpose: Correct, tested role enforcement.
+when:
+- Operations differ by role.
+org:
+- VERIFIED: Roles come from the token `roles` claim (and `scp` for scopes); service-wide required role is validated in the token middleware; B enforces `ALLOWED_ROLES` (roles or scopes).
+- MUST: If per-operation roles are needed define a role-to-operation map in code, enforce with `requireRole(...)` mounted on routes, and test 403.
+- MUST: Do not copy the reference's unused `requireRole`/`principalMiddleware` without wiring and tests.
+impl:
+- Role map constant; middleware; tests; docs in OpenAPI (security scopes).
+ex: ts | Role gate
+router.post("/admin/refresh", validateAuthToken(), requireRole("Config.Admin"), adminRateLimiter, refresh);
+/ex
+fail:
+- 403 `FORBIDDEN`.
+test:
+- Role present/absent/empty.
+anti:
+- Role names scattered as strings.
+check:
+- Map; wired; tested.
+
+@@ secrets-management | Secrets Management
+ev: E2
+cls: VERIFIED (CFG-04, CFG-07) / Key Vault absent
+std: CFG-07, CFG-04, SEC-06, OBS-03
+rel: configuration-security, azure-managed-identity, internal-package-management, data-protection, pipeline-security-scanning
+d: Use when handling secrets (API keys, connection strings, HMAC secrets, private keys, registry tokens) - sourcing from environment, masking, rotation, CI/CD injection, secret scanning, and what to do when a secret is found in a repo.
+scope: Secret lifecycle.
+app: Services and pipelines.
+purpose: No leaked or default secrets.
+when:
+- Adding/rotating a secret; seeing a secret in code or `.env`.
+org:
+- MUST: Secrets only via environment variables injected by the platform/variable groups; no Key Vault code exists (`// TODO: read secret from keyvault`) - do not add vault SDK usage without approval.
+- MUST: `.env*` ignored; secrets absent from Docker layers (`AuthToken` build-arg; `.npmrc` removed); pipelines scan secrets (TruffleHog in prod pipelines).
+- MUST: Mask in logs (`MASK_CONFIG`, `maskApiKeyForLog`); never echo `.env` values in answers, docs or tests.
+- MUST: If a real secret is found committed or in working files, do not reproduce it; report location and require rotation.
+- VERIFIED: Per-caller internal keys (`INTERNAL_API_KEY_<CALLER>`) enable independent rotation.
+impl:
+- Add placeholder to `.env.example`; configure pipeline variable; rotate if exposed.
+ex: text | Rotation checklist
+generate new key -> set in platform settings for callee and caller -> deploy -> remove old -> verify 401 with old
+/ex
+fail:
+- Missing secret -> startup/request failure.
+sec:
+- Constant-time compare; least privilege.
+test:
+- Secret scan in CI.
+anti:
+- Defaults for secrets; shared keys.
+check:
+- Source; masked; scanned; rotatable.
+
+@@ certificate-management | Certificate Management
+ev: E0
+cls: GENERIC (no organizational evidence)
+std: SEC-08
+rel: mutual-tls, secrets-management, api-security, operational-runbooks
+d: Use when a service needs to manage TLS/signing certificates. The reference repositories contain no certificate handling (TLS terminates at the platform; Redis uses TLS with default trust). Generic baseline only.
+scope: Certificate lifecycle.
+app: Azure (App Service/Container Apps/Key Vault).
+purpose: Avoid expiry outages and key leaks.
+when:
+- Custom domains, client certs, signing.
+org:
+- GENERIC: Prefer platform-managed certificates; keep private keys in Key Vault (requires approval); monitor expiry with alerts; never commit certificates/keys; rotate before expiry with documented runbooks.
+- MUST: Report absence of organizational standard and request approval before building certificate code.
+impl:
+- Document owner, expiry, renewal steps in the runbook.
+ex: text | Inventory table (GENERIC)
+Name | Where | Expiry | Owner | Renewal runbook
+/ex
+fail:
+- Expired cert incident procedure in runbook.
+test:
+- Expiry monitoring check.
+anti:
+- Self-signed certs in production.
+check:
+- Owner; expiry alert; approval.
+
+@@ mutual-tls | Mutual TLS
+ev: E0
+cls: GENERIC (no organizational evidence)
+std: SEC-08, SEC-03
+rel: certificate-management, service-to-service-authentication, api-security
+d: Use when considering mutual TLS between services. The organization authenticates services with Entra tokens and internal API keys; no mTLS exists in the reference repositories. Generic baseline requiring architectural approval.
+scope: mTLS.
+app: Azure networking/gateway.
+purpose: Avoid an unapproved auth mechanism.
+when:
+- Asked to add mTLS.
+org:
+- GENERIC: mTLS, if approved, belongs at the platform/gateway layer, not in application code; it complements, not replaces, token + internal-key authentication.
+- MUST: Do not implement client-certificate verification in services without approval (`SEC-03`/`SEC-01` are the standards).
+impl:
+- Raise an ADR proposal.
+ex: text | Decision record needed
+Context / options (gateway mTLS vs tokens) / decision owner
+/ex
+fail:
+- N/A.
+test:
+- N/A until approved.
+anti:
+- Custom cert parsing in handlers.
+check:
+- ADR approved.
+
+@@ data-protection | Data Protection
+ev: E2
+cls: VERIFIED (SEC-06, OBS-03) partial
+std: SEC-06, OBS-03, DB-02, OBS-07
+rel: sensitive-data-masking-in-logs, secrets-management, audit-logging, response-dto-mapping, security-review
+d: Use when handling personal, tenant or secret data - minimization in logs/audit/telemetry, masking, retention via TTL, tenant scoping, no sensitive data in URLs or cache keys, and secure transport (TLS to Azure Redis/Mongo).
+scope: Protecting data at rest/in transit/in logs.
+app: Services.
+purpose: Limit exposure of sensitive data.
+when:
+- Storing, logging, caching or returning personal/tenant data.
+org:
+- MUST: Mask before logging/telemetry/audit (`MASK_CONFIG`); never log bodies; TTL on audit/outbox data (`AUDIT_LOG_TTL_DAYS`, `*_OUTBOX_TTL_SECONDS`).
+- MUST: TLS for Redis (Azure) and platform TLS for HTTP; no sensitive values in cache keys, URLs or metric labels.
+- MUST: Tenant-scoped storage/keys (`idem:{clientId}:...`); responses return DTOs only (`response-dto-mapping`).
+- GENERIC: Encrypt at rest relies on Azure services; field-level encryption is not evidenced.
+impl:
+- Data inventory in PR for new fields; add to mask config; set retention.
+ex: text | PR note
+Field emailId: PII, masked partial in logs, retained 90 days (TTL index), not in cache keys
+/ex
+fail:
+- Redaction failures must not expose data (mask defaults to full for unknown secret names configured).
+test:
+- Log capture; DTO leak tests.
+anti:
+- PII in cache keys.
+check:
+- Masking; retention; scoping.
+
+@@ api-security | API Security
+ev: E2
+cls: VERIFIED (SEC-01..SEC-06, SEC-09 gaps)
+std: SEC-01, SEC-03, SEC-05, SEC-09, API-09, ERR-07
+rel: authentication, authorization, cors-policy, ssrf-protection, api-rate-limiting, security-review
+d: Use when hardening or reviewing an HTTP API - authenticate every route, validate input, CORS allow-list, rate limits, SSRF guards, constant-time secret checks, safe errors, and documented gaps (helmet, body size limit, docs exposure).
+scope: API-level security controls.
+app: Express.
+purpose: Baseline API security consistent with the estate.
+when:
+- Security review; new public endpoint.
+org:
+- MUST (VERIFIED): authenticate every non-probe route; schema-validate input; CORS allow-list; SSRF guard for client-supplied URLs; tiered rate limiting on fan-out/admin routes; `timingSafeEqual` for keys/signatures; no internals in errors; raw-body HMAC for webhooks; fail-closed config.
+- GAPS (do not present as standards): no `helmet`, no `express.json({limit})`, unauthenticated Swagger, relax flags, JWKS-from-unverified-claim in the auth package.
+- GENERIC (recommended, pending approval): add `helmet`, explicit body limits, gate docs, HSTS via platform.
+impl:
+- Run the checklist in `security-review`; fix or record each gap.
+ex: text | Checklist excerpt
+auth on all routes | validation on all segments | CORS allow-list | SSRF guard | rate limit | constant-time compare | no internal detail
+/ex
+fail:
+- Security failures use 401/403 catalog errors.
+test:
+- Security tests (`security-testing`).
+anti:
+- `origin: true` with credentials.
+check:
+- Checklist complete; gaps recorded.
+
+@@ internal-api-key-authentication | Internal API Key Authentication
+ev: E1
+cls: VERIFIED (SEC-03)
+std: SEC-03, CFG-04, CTX-02, ERR-02
+add: x-internal-api-key + x-internal-api-caller authentication (constant-time, fail-closed, boot guard, per-caller registry) is implemented in both repos and is the organization's primary internal-endpoint control; it deserves its own skill.
+rel: service-to-service-authentication, machine-authentication, secrets-management, request-header-management, authentication
+d: Use when implementing or reviewing internal endpoint protection with x-internal-api-key - constant-time comparison, fail-closed outside local/dev, startup guard, per-caller key registry, caller allow-list per route, masked logging.
+scope: Internal API key middleware.
+app: Express.
+purpose: Only registered internal callers reach internal endpoints.
+when:
+- Adding an internal route or caller.
+org:
+- MUST: Header `x-internal-api-key` (and `x-internal-api-caller`); compare with `crypto.timingSafeEqual` after a length check; **fail closed**: key unset outside local/dev -> reject (and refuse to boot via env validation); in local/dev warn and allow.
+- MUST: One key per caller from `INTERNAL_API_KEY_<CALLER>`; registry maps key -> caller; per-route allowed callers; missing keys configured -> 503 misconfigured; bad key -> 401 (log masked suffix); caller not allowed -> 403.
+- MUST: Mount the middleware on **every** internal route (reference defect: internal-config routes did not mount it); use catalog errors (`UNAUTHORIZED`/`FORBIDDEN`).
+- MUST NOT: bypass flags in production; Map-key lookup comparisons are not constant-time (reference B) - prefer `timingSafeEqual` over each configured key.
+impl:
+- Implement per the reference; add tests for each outcome.
+ex: ts | Constant-time compare (reference)
+function safeEqual(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a, "utf8"), bBuf = Buffer.from(b, "utf8");
+  return aBuf.length === bBuf.length && timingSafeEqual(aBuf, bBuf);
+}
+/ex
+fail:
+- 401/403/503 in the standard envelope.
+sec:
+- Never log the key; rotate per caller.
+test:
+- Valid, invalid, missing, wrong caller, unset-in-prod rejection, unset-in-local allowed.
+anti:
+- `if (!configuredKey) return next()` in production.
+check:
+- Constant time; fail closed; every route; per-caller.
+
+@@ webhook-signature-verification | Webhook Signature Verification
+ev: E1
+cls: VERIFIED (MSG-05, SEC-04)
+std: MSG-05, SEC-04, ARCH-05, CFG-04
+add: Inbound webhook authentication over the raw body (HMAC-SHA256, constant-time, boot guard, POST only) and the outbound signature format are implemented and require their own reusable standard.
+rel: webhook-delivery, third-party-service-integration, middleware-request-pipeline, secrets-management, request-deduplication
+d: Use when receiving provider webhooks or verifying callbacks - capture the raw request bytes, compute HMAC-SHA256 with the shared secret, compare in constant time, require the secret outside local/dev, accept POST only, and reject with the standard 401.
+scope: Inbound webhook authenticity.
+app: Express.
+purpose: Only the real provider can trigger state changes.
+when:
+- Adding a webhook endpoint.
+org:
+- MUST: `express.json({ verify: (req, _res, buf) => { req.rawBody = Buffer.from(buf); } })` before the route; verification middleware after the internal-key check (where used) and before the handler; HMAC-SHA256 over `rawBody` hex digest vs the signature header (`x-<provider>-webhook-signature`), `timingSafeEqual` with a length check.
+- MUST: Secret required outside local/dev - **both** a request-time rejection and a boot guard (reference defect: boot guard commented out); local/dev may skip with a warn.
+- MUST: POST only; respond with the catalog `UNAUTHORIZED` on failure; log path and booleans (`hasSignature`, `hasRawBody`) only.
+- MUST: Idempotent processing by provider event ID (`request-deduplication`).
+- VERIFIED: Outbound format is different (`timestamp.body` with `X-Webhook-Timestamp`/`X-Webhook-Signature: sha256=`) - see `webhook-delivery`; consider timestamp tolerance when verifying peers' signatures.
+impl:
+- Add raw capture, middleware, env var, boot guard, tests.
+ex: ts | Verification (reference)
+const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
+const ok = expected.length === provided.trim().length && timingSafeEqual(Buffer.from(expected), Buffer.from(provided.trim()));
+if (!ok) throwConfigError("UNAUTHORIZED", { path: req.originalUrl });
+/ex
+fail:
+- Missing signature/raw body -> 401.
+sec:
+- Never log the secret or signature; reject replayed old timestamps if the provider supplies one.
+test:
+- Valid, tampered body, missing header, missing secret in prod, raw body preserved.
+anti:
+- `JSON.stringify(req.body)` for HMAC.
+- `===` comparison.
+check:
+- Raw bytes; constant time; boot guard; POST; dedupe.
+
+@@ ssrf-protection | SSRF Protection
+ev: E1
+cls: VERIFIED (INT-03)
+std: INT-03, SEC-09, API-05, CFG-04
+add: Both repositories guard client-supplied callback URLs against SSRF with scheme, private-range and allow-list checks; this security control is reusable and not in the predefined list.
+rel: webhook-delivery, third-party-service-integration, request-validation, api-security, external-api-client
+d: Use when the service makes outbound requests to URLs supplied by clients or tenants (webhook callbacks, subscriber endpoints) - require https, deny loopback/private/link-local/metadata hosts, apply an operator allow-list, and validate at registration and at call time.
+scope: Outbound URL validation.
+app: Node.
+purpose: Prevent internal network access via user-supplied URLs.
+when:
+- Accepting callback/endpoint URLs.
+org:
+- MUST: Schema enforces `https:`; guard denies `localhost`, `*.localhost`, `*.local`, IPv4 `127/8`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16` (cloud metadata), `0/8`; IPv6 `::1`, `fe80:`, `fc/fd` ULA; optional operator allow-list (`SUBSCRIBER_HOST_ALLOWLIST` / `WEBHOOK_CALLBACK_URL_ALLOWLIST`) takes precedence for approved hosts.
+- MUST: Validate on registration **and** before each delivery; disable only in local/dev via the explicit relax flag (never in production).
+- GENERIC (gap): resolve the hostname and re-check resolved IPs (DNS rebinding); disable redirects; set strict timeouts.
+impl:
+- Reuse the guard module; call it from the validation layer and the delivery worker.
+ex: ts | Guard usage
+assertSafeCallbackUrl(url);   // throws catalogued VALIDATION error with reason "host_not_allowed"
+await deliver(url, body);
+/ex
+fail:
+- Unsafe URL -> 400 validation error with safe reason; never fetch.
+sec:
+- No credentials in URLs; do not echo resolved IPs to callers.
+test:
+- Each denied range, allow-list, https enforcement, IPv6, hostnames like `internal.local`.
+anti:
+- Regex-only host checks.
+- Following redirects.
+check:
+- https; denylist; allowlist; both points; prod-safe.
+
+@@ cors-policy | CORS Policy
+ev: E2
+cls: VERIFIED (SEC-05)
+std: SEC-05, API-04, ERR-06
+add: Allow-list CORS with typed rejection mapped to a catalogued 403 is a distinct, reusable security control.
+rel: api-security, middleware-request-pipeline, request-header-management, global-exception-handling
+d: Use when configuring CORS - env allow-list, normalized origins, fail-closed default, server-to-server requests without Origin, credentials, allowed and exposed headers, and typed rejection through the error middleware.
+scope: CORS configuration.
+app: Express `cors`.
+purpose: Browser cross-origin protection without breaking service callers.
+when:
+- Serving browser clients.
+org:
+- MUST: `CORS_ALLOWED_ORIGINS` comma-separated, normalized (`normalizeCorsOrigin`), empty = no browser origin allowed; missing `Origin` header allowed (non-browser); never `origin: true` with `credentials: true`.
+- MUST: Rejection is `callback(new CorsRejectedError(origin))`; the error middleware maps it **by type** to catalog `CORS_REJECTED` (403) and logs `warn`.
+- MUST: `allowedHeaders` includes all custom headers (`Content-Type`, `Authorization`, `x-internal-api-key`, `x-correlation-id`, provider signature headers); `exposedHeaders` includes `x-correlation-id`.
+- GENERIC: Remove `console.log` of allowed origins (reference) - use the logger at `debug`.
+impl:
+- Implement with parse/normalize helpers; test allowed/denied/no-origin.
+ex: ts | Origin callback (reference)
+origin(origin, cb) {
+  if (!origin) return cb(null, true);
+  const n = normalizeCorsOrigin(origin);
+  return n && allowedOrigins.has(n) ? cb(null, true) : cb(new CorsRejectedError(origin));
+}
+/ex
+fail:
+- 403 envelope.
+test:
+- Allowed origin, unknown origin, no origin, preflight headers.
+anti:
+- Wildcard with credentials.
+- Hand-built CORS error body.
+check:
+- Allow-list; typed error; headers.
