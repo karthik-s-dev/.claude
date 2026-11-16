@@ -14,12 +14,19 @@ Conflict IDs (`C-xx`) are defined in `governance/conflicts-and-open-decisions.md
 
 ---
 
+## Owner decisions (2026-11-16)
+1. **`@inextlabs/inflow-usage-utils` is removed from the ecosystem** (too usage-service specific): no skill depends on it; helpers are specified locally.
+2. **Conflict recommendations approved** ("ok with recommendation") — see `governance/conflicts-and-open-decisions.md` §E for each outcome. Where a skill note was marked UNRESOLVED and the conflict is now decided, the skill renders it as **DECIDED (C-xx)** with the decision. Items still open: **C-10** (APM stack), the Node LTS version (C-20), the package manager (C-21); two choices below were made on the owner's behalf and need confirmation: **C-01 sequence banding optional**, **C-09 pagination shape = `data.pagination { page, limit, totalItems, totalPages, hasNextPage }`**.
+3. Where a standard below still reads "UNRESOLVED" for a decided conflict, the decision in §E of the conflicts file prevails.
+
+---
+
 ## PKG — Internal packages
 
 ### PKG-01 Approved internal packages · MANDATED · E1
 - **Rule:** use the `@inextlabs/*` package for each concern before any public alternative. Never replace one with a public package; if absent from the target repo, report the missing dependency (do not substitute).
 - **Registry:** `@inextlabs:registry=https://npm.pkg.github.com/inextlabs/` in `.npmrc`; token injected via the `AuthToken` environment variable (`${AuthToken}` in `.npmrc`, `ARG AuthToken` in Docker). Never commit a literal token.
-- **Approved mapping:** logging → `@inextlabs/logger`; error type/response → `@inextlabs/platform-errors`; Entra auth + Managed-Identity token → `@inextlabs/azure-oauth`; error-code construction / retry / usage event IDs / Mongo URI helpers / correlation helpers / OTEL init (usage services) → `@inextlabs/inflow-usage-utils`; shared Mongoose models → `@inextlabs/schema-models`.
+- **Approved mapping:** logging → `@inextlabs/logger`; error type/response → `@inextlabs/platform-errors`; Entra auth + Managed-Identity token → `@inextlabs/azure-oauth`; shared Mongoose models → `@inextlabs/schema-models`. **`@inextlabs/inflow-usage-utils` is excluded from this ecosystem (owner decision 2026-11-16: usage-platform specific).** Its capabilities (error-code builder, retry, event IDs, Mongo URI helpers, correlation helpers, OTEL init, header constants) are specified as small **local helpers** inside each service; skills never require the package. Where a reference service imports it, that is evidence only. logging → `@inextlabs/logger`; error type/response → `@inextlabs/platform-errors`; Entra auth + Managed-Identity token → `@inextlabs/azure-oauth`; error-code construction / retry / usage event IDs / Mongo URI helpers / correlation helpers / OTEL init (usage services) → `@inextlabs/inflow-usage-utils`; shared Mongoose models → `@inextlabs/schema-models`.
 - **Version policy observed:** `logger` and `platform-errors` pinned exactly (`1.0.4`, `1.0.1`); others use `^`. Treat pinning as the default for foundational packages (**CONFIG**).
 - **Evidence:** A/B `package.json`, `.npmrc`; B `src/*` imports.
 - **Skills:** `internal-package-management`, `structured-logging`, `error-catalog-management`.
@@ -81,7 +88,7 @@ Conflict IDs (`C-xx`) are defined in `governance/conflicts-and-open-decisions.md
 
 ### API-02 Success envelope · UNRESOLVED (C-06)
 - A `sendSuccess()`: `{ success:true, message, data, metadata:{ correlationId, timestamp } }`.
-- Shared package `buildSuccessResponse()`: `{ success:true, data, metadata:{ correlationId, timestamp, requestId?, pagination?{limit,offset,total,hasMore} } }` (no `message`).
+- (Excluded) The usage-utils `buildSuccessResponse()` shape `{ success, data, metadata{…, pagination{limit,offset,total,hasMore}} }` is not an org standard. **Decided (C-06): the envelope is A's `{ success, message, data, metadata:{ correlationId, timestamp } }`.**: `{ success:true, data, metadata:{ correlationId, timestamp, requestId?, pagination?{limit,offset,total,hasMore} } }` (no `message`).
 - B v2 success paths return the **raw payload** (`res.json(result)`), no envelope.
 - **Rule until decided:** new endpoints use the envelope (`success`, `data`, `metadata.correlationId`, `metadata.timestamp`) — follow the target repo's existing success shape; never mix shapes inside one API surface. Whether `message` is included needs architecture approval.
 - **Skills:** `api-response-structure`, `response-dto-mapping`, `response-serialization`.
@@ -146,7 +153,7 @@ Conflict IDs (`C-xx`) are defined in `governance/conflicts-and-open-decisions.md
 - A has **no** idempotency (declared `VERSION_CONFLICT` 412 only, E3).
 - **Skills:** `idempotency-management`, `request-deduplication`, `message-idempotency`.
 
-### CTX-04 Effect-level dedupe / deterministic event identity · VERIFIED · E2 (B + shared pkg)
+### CTX-04 Effect-level dedupe / deterministic event identity · VERIFIED · E2 (B)
 - `buildUsageEventId({entityType, entityId, metricKey, discriminator?})` → `idem:<requestId>:<metric>`; `derivedUsageEventId(parent, "aiCredits")`; `deriveUsageEventId(...)` for legacy events. The ID is used as the Service Bus `messageId` and consumer unique-index key. Bare entity IDs are not unique — always include metric key (and discriminator when repeatable).
 - **Skills:** `usage-event-identity`, `message-deduplication`.
 
@@ -168,10 +175,10 @@ Conflict IDs (`C-xx`) are defined in `governance/conflicts-and-open-decisions.md
 - **Skills:** `error-catalog-management`, `business-exception-handling`, `technical-exception-handling`.
 
 ### ERR-03 Numeric error-code composition · MANDATED (task + ADR-004) · E1 / C-01
-- **Format (verified in `@inextlabs/inflow-usage-utils` `service-registry.d.ts`):** `numericCode = PLATFORM_CODE + SERVICE_CODE + MODULE_NUM + SEQ`, 8 characters: `P`(1 digit, always `1`) + `SS`(2 digits, zero-padded service number) + `MM`(2 digits, module) + `EEE`(3 digits, sequence starting `001`). Example `makeErrorCode(3, 0, 1) → "10300001"`. Human-readable service prefix: `"INXT1" + SS` → `makeServicePrefix(3) = "INXT103"`.
-- **Registered services:** config = 02 (reference only; not in `SERVICE_CODES`), enforcement = 03, ingestion = 04, rollup = 05, portal = 06. New services must register a new `SS` in the shared registry — never reuse.
+- **Format (observed in the usage platform's service registry; implemented locally by each service as `makeErrorCode(ss, mm, seq)` = `"1" + pad2(ss) + pad2(mm) + pad3(seq)`):** `numericCode = PLATFORM_CODE + SERVICE_CODE + MODULE_NUM + SEQ`, 8 characters: `P`(1 digit, always `1`) + `SS`(2 digits, zero-padded service number) + `MM`(2 digits, module) + `EEE`(3 digits, sequence starting `001`). Example `makeErrorCode(3, 0, 1) → "10300001"`. Human-readable service prefix: `"INXT1" + SS` (for example `INXT103`).
+- **Registered services:** config = 02 (reference only; not in `SERVICE_CODES`), enforcement = 03, ingestion = 04, rollup = 05, portal = 06. New services must register a new `SS` in the organization's service-code registry (owner/location to be confirmed) — never reuse. (Config's `02` is not in the usage-platform registry.)
 - **Sequence banding (registry doc comment + A catalog comments):** 001–010 validation(400) · 011 authentication(401) · 012 authorization(403) · 013–022 not found(404) · 023–034 infrastructure(500) · 035–048 business logic · 049–050 external dependency (502/503) · 051–052 catch-all(500). A follows this banding with `MM="00"`.
-- **MM semantics — UNRESOLVED (C-01):** A hard-codes `MM="00"` (no module segmentation); B sets `MM` = **source-file/functional-area** (`01` v2-routes … `07` error middleware) with per-file sequences starting `001` and **no** category banding. Both produce valid 8-digit codes via the same format; the organization must choose one MM policy. Until decided: keep `PLATFORM+SERVICE+MODULE+SEQ`, follow the target repo's existing MM policy, never change codes already shipped, and use `makeErrorCode` from the shared package when available.
+- **MM semantics — DECIDED (C-01, approved 2026-11-16): MM = functional module (not source file); sequence banding optional (confirm); migrate legacy schemes.** Earlier analysis: A hard-codes `MM="00"` (no module segmentation); B sets `MM` = **source-file/functional-area** (`01` v2-routes … `07` error middleware) with per-file sequences starting `001` and **no** category banding. Both produce valid 8-digit codes via the same format; the organization must choose one MM policy. Until decided: keep `PLATFORM+SERVICE+MODULE+SEQ`, follow the target repo's existing MM policy, never change codes already shipped, and use the service's local `makeErrorCode` helper. Existing shipped codes are never changed.
 - **Uniqueness rules (VERIFIED):** codes are never reused, renamed or renumbered; `(SS, MM, EEE)` unique per service; duplicates must be prevented by a catalog test (see ERR-09). B's `error-catalog.test.ts` exists (v2); A has `test/mocks/platform-errors.ts` only — duplicate-prevention is a **GENERIC** addition.
 - **Env hygiene defect (A, C-01):** `PLATFORM_CODE`/`SERVICE_CODE` read from env with literal fallbacks (`"1"`, `"02"`) and `SERVICE_CODE` is `"102"` in `logger.bootstrap.ts` — a single constant must feed both. Prefer a code constant over env (B uses a constant `SS = 3`).
 - **Legacy schemes (do not extend):** B `src/error-codes.ts` `50`+HTTP (`50404`) and vendored `HttpError` `INXT50`+HTTP (`INXT50404`) — C-01.
@@ -244,7 +251,7 @@ Conflict IDs (`C-xx`) are defined in `governance/conflicts-and-open-decisions.md
 - Use `@inextlabs/logger` only. **Package API (from its README):** default export singleton; `configureLogger({level, service, version, environment, mask})` **once at startup before other modules import the default export**; `createLogger(opts)` for extra/isolated instances; `createMasker(mask)`; `serializeError`; `logger.child(bindings)`; levels `trace, debug, info, warn, error, fatal`; call shapes `(msg)`, `(obj)`, `(obj, msg)`, `(Error)`, `(Error, msg)` — **Pino order: object first, message second**; `close()` flushes the optional Event Hub sink (`AZURE_EVENTHUB_NAMESPACE`/`AZURE_EVENTHUB_NAME`).
 - **A implementation:** `logger.bootstrap.ts#initLogger()` → `configureLogger({ level: LOG_LEVEL ?? "info", service: SERVICE_NAME, serviceCode: SERVICE_CODE, environment: APP_ENV, mask: MASK_CONFIG })` called in `server.ts` before `app` import; `general/service/logger.ts` exports a thin wrapper (drop-in `(obj|Error|msg, msg?)`) that merges `correlationId` from ALS and `closeLogger()`.
 - **B implementation:** `logger.ts` calls `createLogger({ service, level: LOG_LEVEL, eventHub? })` and wraps it in `FlexibleLogger` that also accepts legacy `(msg, meta)`; OTEL init separate. **Deviation (C-02):** legacy argument order, correlation ID not auto-stamped, service name literal.
-- **Rule:** new code uses `(obj, msg)` Pino order; one logger module per service; no `console.*` (both repos have residual `console.*` in config bootstrap/CORS and `azure-oauth`; flag, do not copy); do not use the winston-based `createLogger` exported by `@inextlabs/inflow-usage-utils` (C-02) and do not add `pino`/`winston`/`bunyan` — `winston` is declared in B's `package.json` but unused.
+- **Rule:** new code uses `(obj, msg)` Pino order; one logger module per service; no `console.*` (both repos have residual `console.*` in config bootstrap/CORS and `azure-oauth`; flag, do not copy); do not add `pino`/`winston`/`bunyan` — `winston` is declared in B's `package.json` but unused.
 - **Skills:** `structured-logging`, `logger-initialization`, `log-level-standards`.
 
 ### OBS-02 Log content rules · VERIFIED · E2
@@ -253,7 +260,7 @@ Conflict IDs (`C-xx`) are defined in `governance/conflicts-and-open-decisions.md
 - **Skills:** `structured-logging`, `error-logging`, `log-level-standards`.
 
 ### OBS-03 Sensitive-data masking · VERIFIED · E2 (A) / MANDATED (package capability)
-- `MASK_CONFIG: MaskConfig` extends package defaults (19 fields: email, phone, mobile, password, passcode, otp, token, jwt, authorization, cookie, set-cookie, refreshToken, accessToken, apiKey, secret, clientSecret, creditCard, cvv, ssn) with service-specific names (`emailId: partial`, `phoneNumber: partial`, `key/endpoint/connectionString/connectionstring/conn_str: full`). The same config feeds the logger, telemetry export (`createMasker(MASK_CONFIG)`) and audit log. Helpers: `maskConnectionUri`, `maskApiKeyForLog` (B), `sanitizeLogMeta` (shared pkg).
+- `MASK_CONFIG: MaskConfig` extends package defaults (19 fields: email, phone, mobile, password, passcode, otp, token, jwt, authorization, cookie, set-cookie, refreshToken, accessToken, apiKey, secret, clientSecret, creditCard, cvv, ssn) with service-specific names (`emailId: partial`, `phoneNumber: partial`, `key/endpoint/connectionString/connectionstring/conn_str: full`). The same config feeds the logger, telemetry export (`createMasker(MASK_CONFIG)`) and audit log. Helpers: local `maskConnectionUri` and `maskApiKeyForLog` (B).
 - **Skills:** `sensitive-data-masking-in-logs`, `audit-logging`.
 
 ### OBS-04 Health endpoints · VERIFIED (A) / UNRESOLVED (C-15)
@@ -292,7 +299,7 @@ Conflict IDs (`C-xx`) are defined in `governance/conflicts-and-open-decisions.md
 - **Skills:** `redis-client`.
 
 ### DB-03 Repository pattern · VERIFIED · E2 (B) / E3 (A)
-- One module per aggregate owning collection access, indexes (`ensure*Indexes`), mapping and `close()`. Naming inconsistent in B (`x-repository.ts` vs `x.repository.ts`). Retry on writes: `MAX_RETRY_ATTEMPTS=3`, `RETRY_DELAY_MS=100` in `current-usage-state-repository.ts` (inline, not `withRetry`).
+- One module per aggregate owning collection access, indexes (`ensure*Indexes`), mapping and `close()`. Naming inconsistent in B (`x-repository.ts` vs `x.repository.ts`). Retry on writes: `MAX_RETRY_ATTEMPTS=3`, `RETRY_DELAY_MS=100` in `current-usage-state-repository.ts` (inline; no shared retry helper).
 - **Skills:** `database-repository-pattern`.
 
 ### DB-04 Indexes · VERIFIED · E2
@@ -353,7 +360,7 @@ Conflict IDs (`C-xx`) are defined in `governance/conflicts-and-open-decisions.md
 - **B `getConfigServiceHttpClient()`:** lazily created singleton `axios.create({ baseURL, timeout: CONFIG_SERVICE_TIMEOUT_MS (5000), headers:{Content-Type: application/json} })`; request interceptor attaches `Authorization: Bearer <generateAuthToken()>` **only when** `AZURE_SERVICE_OAUTH_SCOPE` is set; **if the scope is set and token acquisition fails → abort the request** by throwing `ConfigServiceUnavailableError(…, 401)` (never call unauthenticated); test reset `__resetConfigServiceClientForTests()`.
 - **Result handling:** `handleConfigServiceRequestError(err, ctx)`: `404 → return null` (info log "no subscription"), **any other failure → log error with context + hint, throw `ConfigServiceUnavailableError(message, status)`**. Callers: `null` = confirmed absence, throw = unavailable, never "empty".
 - **A `notifyEnforcementSubscriptionChanged()`:** per-call `axios.post(url, body, { timeout: 10_000, headers: { x-internal-api-key, x-internal-api-caller, x-correlation-id } })`; skip with log when base URL/key unset; failures logged (`warn`, `serializeError`) and swallowed (best-effort); `...Async` variant `void …catch(log error)`; durable path via outbox (MSG-03).
-- **Retry:** none on these paths in either repo; shared `withRetry` exists but is unused (E0 for retry in code) — GENERIC baseline in `retry-policy`.
+- **Retry:** none on these paths in either repo; no retry helper is used (E0 for retry in code) — GENERIC baseline in `retry-policy`.
 - **Cancellation:** no `AbortController`/signal use (E0).
 - **Tests:** `config-service-client.test.ts` (B) with mocked axios.
 - **Skills:** `external-api-client`, `http-client-management`, `resilient-http-communication`, `integration-error-handling`, `service-to-service-authentication`.
@@ -425,7 +432,7 @@ Conflict IDs (`C-xx`) are defined in `governance/conflicts-and-open-decisions.md
 - **Skills:** `timeout-management`.
 
 ### RES-03 Retry & backoff · E3
-- Present: outbox attempts with max (A linear backoff with `nextAttemptAt` (not exponential); B poll-based, no delay), Redis `retryStrategy` (`min(times*200, cap)`), Mongo inline `MAX_RETRY_ATTEMPTS=3`/`RETRY_DELAY_MS=100`, webhook delivery attempts. **Unused:** shared `withRetry(fn, {maxAttempts, delayMs, backoffMultiplier, maxDelayMs})`. No jitter anywhere.
+- Present: outbox attempts with max (A linear backoff with `nextAttemptAt` (not exponential); B poll-based, no delay), Redis `retryStrategy` (`min(times*200, cap)`), Mongo inline `MAX_RETRY_ATTEMPTS=3`/`RETRY_DELAY_MS=100`, webhook delivery attempts. No retry helper exists; a local `withRetry(fn, {maxAttempts, delayMs, backoffMultiplier, maxDelayMs})` is the GENERIC baseline. No jitter anywhere.
 - **Skills:** `retry-policy`, `exponential-backoff`, `message-retry-strategy`.
 
 ### RES-04 Crash on fatal · VERIFIED · E2 (A)

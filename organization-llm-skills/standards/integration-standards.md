@@ -9,7 +9,7 @@ IDs: INT-01..06, MSG-01..07, DB-01..07, RES-01..08, ERR-09, CTX-02/03/04.
 4. Log: info on absence, error on failure with ids + `hint`; never tokens/bodies.
 5. Map at the edge to catalog 502/503/504; never forward the downstream body.
 6. Best-effort notifications: skip-with-log when unconfigured; catch+log; use the outbox when loss is harmful.
-7. Not evidenced (GENERIC): retries/jitter, HTTP circuit breaker, `AbortController`. Shared `withRetry` exists, unused.
+7. Not evidenced (GENERIC): retries/jitter, HTTP circuit breaker, `AbortController`. No retry helper is approved or used; a local one is the GENERIC baseline.
 
 ## Messaging (MSG-*)
 Service Bus: one client, one cached sender per topic, `messageId` = deterministic event ID, `applicationProperties` incl. `correlationId`, connection string auth (C-13). Storage Queue: `QueueClient` per queue, base64(JSON), ≤32 per receive, delete after success, drop malformed. Outbox: row before delivery, worker poll, attempts/max/TTL. Webhooks: HMAC (inbound raw body; outbound `timestamp.body`), SSRF guard. Not evidenced: consumers of Service Bus, DLQ, inbox, message versioning.

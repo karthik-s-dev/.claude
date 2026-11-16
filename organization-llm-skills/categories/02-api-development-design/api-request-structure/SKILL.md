@@ -30,7 +30,7 @@ Makes request contracts predictable and prevents identity spoofing through dupli
 - **MANDATORY:** Every tenant/client identifier present in path, query or body must be consistent with the authenticated principal's claim; reject mismatches with a 403 catalogued error (reference: client-claim binding).
 - **MANDATORY:** Body is JSON validated against a schema per segment; unknown/forbidden fields are rejected where the contract says a value is server-calculated (`CALCULATED_METRIC_FORBIDDEN` pattern).
 - **Verified convention:** Header constants (`HEADERS`) come from one module; lowercase names.
-- **UNRESOLVED — do not enforce; report:** One reference service still reads an idempotency key from the body as well (C-07) - do not copy.
+- **DECIDED (C-07, approved 2026-11-16):** Approved: the ADR default is the target (Idempotency-Key header only, relational store for new services, IDEMPOTENCY_KEY_REUSED / IDEMPOTENCY_IN_PROGRESS); the Redis implementation is a documented deviation. _Earlier note (superseded where it conflicts):_ One reference service still reads an idempotency key from the body as well (C-07) - do not copy.
 
 _Source of truth: `API-04`, `API-05`, `CTX-01`, `CTX-03`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 

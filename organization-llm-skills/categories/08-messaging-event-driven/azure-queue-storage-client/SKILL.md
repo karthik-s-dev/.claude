@@ -31,7 +31,7 @@ Reliable background job queues with explicit acknowledgement.
 - **MANDATORY:** Malformed JSON/unknown type -> warn, count (`droppedInvalidNotificationTypeCount`), **delete** (it can never succeed). Transient processing failure -> do not delete (visibility timeout redelivers) and track attempts in the job (`attempt`) up to max.
 - **MANDATORY:** Enqueue failures return `false`/throw per caller contract and are logged with identifiers; never silently drop.
 - **Verified convention:** Queue existence ensured at startup (IaC/startup) and a `markReady` flag asserted before use (warn if used earlier).
-- **UNRESOLVED — do not enforce; report (C-13):** Connection-string auth; Managed Identity (`QueueClient` with `DefaultAzureCredential`) is not implemented - adapter pending approval.
+- **DECIDED (C-13, approved 2026-11-16):** Approved: plan migration of messaging to Managed Identity; connection strings stay until adapters are approved. _Earlier note (superseded where it conflicts):_ Connection-string auth; Managed Identity (`QueueClient` with `DefaultAzureCredential`) is not implemented - adapter pending approval.
 
 _Source of truth: `MSG-02`, `INT-06`, `CFG-01`, `ERR-09`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 

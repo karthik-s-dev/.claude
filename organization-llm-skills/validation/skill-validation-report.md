@@ -10,7 +10,7 @@ Generated 2026-11-14 by `node tools/report.js` (automated checks; manual review 
 | Skills passing all hard checks | 195 |
 | Skills with hard failures | 0 |
 | Skills with warnings | 4 |
-| Total generated size | 1342 KB |
+| Total generated size | 1346 KB |
 | Evidence paths cited in the register that could not be found | 0 |
 
 ### Hard checks (each skill)

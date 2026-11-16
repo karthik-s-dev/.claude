@@ -25,7 +25,7 @@ No surprise breaks.
 
 ## Organizational standards
 - **MANDATORY:** Treat as breaking: removed/renamed field/endpoint/env var/package export, changed error code or status for the same condition, changed envelope, new required header/field, tightened validation, message type/enum change (`USAGE_ALERT` -> `USAGE-ALERT`), DB shape change read by others.
-- **MANDATORY:** Breaking requires version/migration/sunset plan (`api-versioning`, `database-migration`) and a CHANGELOG/README note; shared packages follow semver with deprecation before removal (the shared usage-utils package documents semver and deprecation-before-removal in its VERSIONING.md).
+- **MANDATORY:** Breaking requires version/migration/sunset plan (`api-versioning`, `database-migration`) and a CHANGELOG/README note; shared packages follow semver with deprecation before removal (GENERIC).
 - **MANDATORY:** Consumers' lockfiles are updated in their own PRs to `devtest`.
 
 _Source of truth: `API-08`, `ERR-03`, `MSG-04`, `DB-07`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
@@ -87,7 +87,7 @@ env AZURE_CACHE_FOR_REDIS_HOST_NAME -> REDIS_HOST_NAME | BREAKING | keep alias w
 
 **Skill-specific mandatory rules (violating any of these is a defect):**
 - Treat as breaking: removed/renamed field/endpoint/env var/package export, changed error code or status for the same condition, changed envelope, new required header/field, tightened validation, message type/enum change (`USAGE_ALERT` -> `USAGE-ALERT`), DB shape change read by others.
-- Breaking requires version/migration/sunset plan (`api-versioning`, `database-migration`) and a CHANGELOG/README note; shared packages follow semver with deprecation before removal (the shared usage-utils package documents semver and deprecation-before-removal in its VERSIONING.md).
+- Breaking requires version/migration/sunset plan (`api-versioning`, `database-migration`) and a CHANGELOG/README note; shared packages follow semver with deprecation before removal (GENERIC).
 - Consumers' lockfiles are updated in their own PRs to `devtest`.
 
 ## Related skills

@@ -31,7 +31,7 @@ Gives every service a recognizable API shape and keeps clients from special-casi
 - **MANDATORY:** Every response uses the standard envelopes (API-02, API-03) and sets `x-correlation-id`.
 - **MANDATORY:** All input validated before use (`request-validation`); all failures catalogued (`api-error-response`).
 - **Verified convention:** Resource style in the aliased reference service: plural nouns, nested sub-resources (`/clients/:clientId/bots/:botId/configs/:configType`), state changes as `POST .../{id}/refresh`, capability-named endpoints, static paths mounted before parameterized.
-- **UNRESOLVED — do not enforce; report:** The other reference service uses action endpoints (`POST /v2/check`, `/check-and-record`, `/record-usage-event`) (C-14). Follow the target repo's style; use resource style for CRUD-like new APIs and action endpoints only where the operation is not a resource state change.
+- **DECIDED (C-14, approved 2026-11-16):** Approved: follow the target repo; use resource-oriented routes for new CRUD-like APIs. _Earlier note (superseded where it conflicts):_ The other reference service uses action endpoints (`POST /v2/check`, `/check-and-record`, `/record-usage-event`) (C-14). Follow the target repo's style; use resource style for CRUD-like new APIs and action endpoints only where the operation is not a resource state change.
 
 _Source of truth: `API-01`, `API-02`, `API-03`, `API-04`, `API-10`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 

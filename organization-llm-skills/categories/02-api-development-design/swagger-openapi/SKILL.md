@@ -28,7 +28,7 @@ A living, tested API contract that clients can consume.
 - **MANDATORY:** Every public endpoint is in the spec with request schema, response envelope, error responses and security scheme.
 - **Verified convention:** Reference service A: typed TS object `v2OpenApiSpec` + `getV2SwaggerHtml()` served at `/api/v2/swagger.json` and `/api/v2/docs`. Reference service B: `docs/openapi.json` + `swagger-ui-express` (`mountSwagger`), `/v2` paths derived from the base spec, plus a test (`swagger.test.ts`).
 - **MANDATORY:** A test validates the spec loads and lists expected paths (B pattern).
-- **UNRESOLVED — do not enforce; report:** Docs are served unauthenticated in the reference (C-18). GENERIC: gate docs for non-public APIs.
+- **DECIDED (C-18, approved 2026-11-16):** Approved: spec-as-test; gate documentation for non-public APIs. _Earlier note (superseded where it conflicts):_ Docs are served unauthenticated in the reference (C-18). GENERIC: gate docs for non-public APIs.
 
 _Source of truth: `API-07`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 

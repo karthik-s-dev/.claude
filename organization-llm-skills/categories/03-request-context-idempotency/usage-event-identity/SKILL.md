@@ -1,6 +1,6 @@
 ---
 name: usage-event-identity
-description: Use when emitting metered, audit or domain events that downstream services must count exactly once - building deterministic event IDs (entity, metric, discriminator, derived events) with the shared helpers and using them as message IDs and unique-index keys.
+description: Use when emitting metered, audit or domain events that downstream services must count exactly once - building deterministic event IDs (entity, metric, discriminator, derived events) with local deterministic helpers and using them as message IDs and unique-index keys.
 ---
 
 # Usage / Metered Event Identity
@@ -11,7 +11,7 @@ description: Use when emitting metered, audit or domain events that downstream s
 | Skill name | `usage-event-identity` |
 | Category | 03 — Request Context & Idempotency |
 | Scope | Event identity for effect-level deduplication. |
-| Applicability | Services producing events consumed by other services; uses `@inextlabs/inflow-usage-utils`. |
+| Applicability | Services producing events consumed by other services; implemented as small local helpers. |
 | Evidence | E2 — single repository, repeated and/or tested |
 | Classification | VERIFIED (CTX-04) |
 | Governing standards | `CTX-04`, `MSG-01`, `MSG-04` (defined in `standards/organization-engineering-standards.md`) |
@@ -26,7 +26,7 @@ A replayed or retried publish of the same fact yields the same ID so consumers d
 
 ## Organizational standards
 - **MANDATORY:** Every published event carries `usageEventId` (or equivalent) set **before** publishing; callers that know the entity set it; otherwise derive deterministically (`withUsageEventId`).
-- **MANDATORY:** Use shared helpers: `buildUsageEventId({ entityType, entityId, metricKey, discriminator? })` -> `idem:<requestId>:<metric>`; `derivedUsageEventId(parentId, "aiCredits")` -> `<parent>:d:aiCredits`; `deriveUsageEventId(...)` for legacy events (messageId/jobId/idempotencyKey/requestId else a hash of the full identity).
+- **MANDATORY:** Implement the ID helpers once in the service (pattern from the reference): `buildEventId({ entityType, entityId, metricKey, discriminator? })` -> `idem:<requestId>:<metric>`; `derivedEventId(parentId, "aiCredits")` -> `<parent>:d:aiCredits`; a deterministic fallback (messageId/jobId/idempotencyKey/requestId, else a hash of the full identity) for legacy events.
 - **MANDATORY:** A bare entity ID is not unique (one request can emit several metrics); always include the metric key and, where an entity can repeat a metric, a stable discriminator.
 - **MANDATORY:** Use the ID as the broker `messageId` (enables duplicate detection) and as the consumers' unique-index key within `{productLine, clientId}`.
 - **Verified convention:** Producer carries `idempotencyKey`, `correlationId`, `subscriptionId`, `enforcementStatus` ("recorded"/"skipped") and `failOpenReason` for audit.
@@ -52,13 +52,13 @@ _Source of truth: `CTX-04`, `MSG-01`, `MSG-04`. If this section and the catalog 
 **IDs**
 
 ```ts
-const id = buildUsageEventId({ entityType: "idem", entityId: idempotencyKey, metricKey: "llmInputTokens" });
-const credits = derivedUsageEventId(id, "aiCredits");
+const id = buildEventId({ entityType: "idem", entityId: idempotencyKey, metricKey: "llmInputTokens" });
+const credits = derivedEventId(id, "aiCredits");
 await sender.sendMessages({ body: payload, messageId: id, applicationProperties: { correlationId } });
 ```
 
 ## Error and failure handling
-- Missing identity inputs -> fall back to `deriveUsageEventId` hash; never publish without an ID.
+- Missing identity inputs -> fall back to the deterministic hash; never publish without an ID.
 - Context helpers never throw when context is missing; they return a documented fallback (`unknown`) and the request continues (CTX-01).
 - Reuse the canonical `error-catalog-management`, `error-code-standards` and `global-exception-handling` skills; do not redefine error handling here.
 
@@ -75,7 +75,7 @@ await sender.sendMessages({ body: payload, messageId: id, applicationProperties:
 - Entity-only IDs.
 
 ## Implementation checklist
-- [ ] Set before publish; shared helpers; unique-index agreement with consumer.
+- [ ] Set before publish; local deterministic helpers; unique-index agreement with consumer.
 
 ## Organizational Compliance Rules
 1. Inspect the target repository first: language, framework, structure, dependencies, existing implementation of this concern.
@@ -96,7 +96,7 @@ await sender.sendMessages({ body: payload, messageId: id, applicationProperties:
 
 **Skill-specific mandatory rules (violating any of these is a defect):**
 - Every published event carries `usageEventId` (or equivalent) set **before** publishing; callers that know the entity set it; otherwise derive deterministically (`withUsageEventId`).
-- Use shared helpers: `buildUsageEventId({ entityType, entityId, metricKey, discriminator? })` -> `idem:<requestId>:<metric>`; `derivedUsageEventId(parentId, "aiCredits")` -> `<parent>:d:aiCredits`; `deriveUsageEventId(...)` for legacy events (messageId/jobId/idempotencyKey/requestId else a hash of the full identity).
+- Implement the ID helpers once in the service (pattern from the reference): `buildEventId({ entityType, entityId, metricKey, discriminator? })` -> `idem:<requestId>:<metric>`; `derivedEventId(parentId, "aiCredits")` -> `<parent>:d:aiCredits`; a deterministic fallback (messageId/jobId/idempotencyKey/requestId, else a hash of the full identity) for legacy events.
 - A bare entity ID is not unique (one request can emit several metrics); always include the metric key and, where an entity can repeat a metric, a stable discriminator.
 - Use the ID as the broker `messageId` (enables duplicate detection) and as the consumers' unique-index key within `{productLine, clientId}`.
 

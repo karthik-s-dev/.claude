@@ -7,7 +7,7 @@ IDs: OBS-01..07, CTX-01/05, ERR-06.
 - Pino order `(obj|Error, msg)`; Error → `err` via `serializeError`; levels trace/debug/info/warn/error/fatal.
 - Wrapper adds `correlationId` from AsyncLocalStorage; request lifecycle logs with `method,path,statusCode,durationMs`; level by status; error path logs route metadata only.
 - Flush with `close()` at shutdown.
-- Never: `console.*`, `pino`/`winston`/`bunyan`, usage-utils' winston `createLogger`, `(msg, meta)` order in new code.
+- Never: `console.*`, `pino`/`winston`/`bunyan`, any other logger, `(msg, meta)` order in new code.
 
 ## Masking (OBS-03)
 Extend the 19 default fields with service fields (`emailId`, `phoneNumber`, `key`, `endpoint`, `connectionString`, `conn_str`); reuse for telemetry and audit; `maskConnectionUri`, `maskApiKeyForLog`.

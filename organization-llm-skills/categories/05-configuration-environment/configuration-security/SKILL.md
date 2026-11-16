@@ -27,7 +27,7 @@ Secrets never leak and a missing secret never opens an endpoint.
 ## Organizational standards
 - **MANDATORY:** Secrets come only from the environment (secret store injected by the platform); never from source, fixtures or logs. Reference gap: no Key Vault integration yet (`// TODO: read secret from keyvault`) - do not invent one.
 - **MANDATORY:** `.env`, `.env.*` are git-ignored; only `.env.example` with placeholders is committed; never copy real values from a working `.env` into docs, tests or skills.
-- **MANDATORY:** Log configuration by key name only; mask URIs (`maskConnectionUri`) and key suffixes (`maskApiKeyForLog`); extend `MASK_CONFIG` for service-specific secret fields (`key`, `endpoint`, `connectionString`, `conn_str`).
+- **MANDATORY:** Log configuration by key name only; mask URIs (a local `maskConnectionUri` helper) and key suffixes (`maskApiKeyForLog`); extend `MASK_CONFIG` for service-specific secret fields (`key`, `endpoint`, `connectionString`, `conn_str`).
 - **MANDATORY:** Missing secret outside local/dev -> startup failure (config) or fail-closed rejection (request), never open (CFG-04).
 - **MANDATORY:** Package-registry token is `${AuthToken}` only; Docker deletes `.npmrc` after install.
 - **Verified convention:** Outbound Azure auth prefers Managed Identity over secrets for HTTP calls (`azure-managed-identity`); messaging still uses connection strings (C-13).
@@ -96,7 +96,7 @@ INTERNAL_API_KEY_ADMIN_PORTAL=
 **Skill-specific mandatory rules (violating any of these is a defect):**
 - Secrets come only from the environment (secret store injected by the platform); never from source, fixtures or logs. Reference gap: no Key Vault integration yet (`// TODO: read secret from keyvault`) - do not invent one.
 - `.env`, `.env.*` are git-ignored; only `.env.example` with placeholders is committed; never copy real values from a working `.env` into docs, tests or skills.
-- Log configuration by key name only; mask URIs (`maskConnectionUri`) and key suffixes (`maskApiKeyForLog`); extend `MASK_CONFIG` for service-specific secret fields (`key`, `endpoint`, `connectionString`, `conn_str`).
+- Log configuration by key name only; mask URIs (a local `maskConnectionUri` helper) and key suffixes (`maskApiKeyForLog`); extend `MASK_CONFIG` for service-specific secret fields (`key`, `endpoint`, `connectionString`, `conn_str`).
 - Missing secret outside local/dev -> startup failure (config) or fail-closed rejection (request), never open (CFG-04).
 - Package-registry token is `${AuthToken}` only; Docker deletes `.npmrc` after install.
 

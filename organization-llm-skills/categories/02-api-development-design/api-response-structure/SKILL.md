@@ -27,7 +27,7 @@ One predictable success shape symmetrical with the error envelope so clients and
 ## Organizational standards
 - **MANDATORY:** Success responses carry `success: true`, `data`, and `metadata.correlationId` + `metadata.timestamp`; they are produced by a shared helper (`sendSuccess`), never hand-built in controllers (API-02).
 - **MANDATORY:** Do not mix enveloped and raw responses within one API surface.
-- **UNRESOLVED — do not enforce; report:** Whether `message` is included (reference helper includes it; shared package builder does not) and the pagination placement (C-06, C-09). Follow the target service's helper; do not invent a third shape.
+- **DECIDED (C-06, approved 2026-11-16):** Approved: every success response uses the envelope { success, message, data, metadata:{ correlationId, timestamp } }. _Earlier note (superseded where it conflicts):_ Whether `message` is included (reference helper includes it; decided in C-06) and the pagination placement (C-06, C-09). Follow the target service's helper; do not invent a third shape.
 - **Verified convention:** **207 Multi-Status** is used when the main operation succeeded but an auxiliary step (audit/event publish) failed; the body flags it (`auditPublished: false`) (API-10).
 - **Verified convention:** `x-correlation-id` echoed as a response header.
 

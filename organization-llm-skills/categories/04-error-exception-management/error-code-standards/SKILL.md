@@ -11,7 +11,7 @@ description: Use when constructing, validating or reviewing numeric error codes 
 | Skill name | `error-code-standards` |
 | Category | 04 — Error & Exception Management |
 | Scope | Error-code composition, registry and uniqueness rules. |
-| Applicability | All services; helper `makeErrorCode` in `@inextlabs/inflow-usage-utils`. |
+| Applicability | All services; a small local `makeErrorCode` helper in each service's error module. |
 | Evidence | E1 — consistent across both reference repositories |
 | Classification | MANDATED (task + ADR-004); MM policy UNRESOLVED (C-01) |
 | Governing standards | `ERR-03`, `ERR-04` (defined in `standards/organization-engineering-standards.md`) |
@@ -26,20 +26,20 @@ Greppable, stable, service-encoded codes that never collide across the platform.
 - Reviewing code that builds codes by hand or uses `50xxx` / `INXT50xxx`.
 
 ## Organizational standards
-- **MANDATORY:** `numericCode = PLATFORM_CODE + SERVICE_CODE + MODULE_NUM + SEQ` as an **8-character string**: `PLATFORM_CODE` = `1` (always, 1 digit); `SERVICE_CODE` = 2 digits, zero-padded, registered per service (config 02, enforcement 03, ingestion 04, rollup 05, portal 06); `MODULE_NUM` = 2 digits, zero-padded; `SEQ` = 3 digits starting `001`, zero-padded. Example `makeErrorCode(3, 0, 1) -> "10300001"`.
-- **MANDATORY:** Human-readable service prefix (when needed in a code string) is `"INXT1" + SS` (`makeServicePrefix(3) -> "INXT103"`).
-- **MANDATORY:** New services register a **new** `SERVICE_CODE` in the shared registry; never reuse another service's.
+- **MANDATORY:** `numericCode = PLATFORM_CODE + SERVICE_CODE + MODULE_NUM + SEQ` as an **8-character string**: `PLATFORM_CODE` = `1` (always, 1 digit); `SERVICE_CODE` = 2 digits, zero-padded, registered per service in the organization's service-code registry (observed: config 02, enforcement 03, ingestion 04, rollup 05, portal 06 - registry owner/location to be confirmed); `MODULE_NUM` = 2 digits, zero-padded; `SEQ` = 3 digits starting `001`, zero-padded. Example `makeErrorCode(3, 0, 1) -> "10300001"`.
+- **MANDATORY:** Human-readable service prefix (when needed in a code string) is `"INXT1" + SS` (for example `INXT103`).
+- **MANDATORY:** New services register a **new** `SERVICE_CODE` in the service-code registry; never reuse another service's.
 - **MANDATORY:** Uniqueness is per `(SERVICE_CODE, MODULE_NUM, SEQ)`; a number is never reused or changed once released; duplicates are prevented by a catalog test and code review.
 - **MANDATORY:** `SERVICE_CODE` is a single constant imported by the catalog and the logger configuration (reference defect: `"02"` in the catalog vs `"102"` in logger bootstrap); do not read it from env with literal fallbacks.
-- **Verified convention:** Sequence banding (shared registry doc + config catalog): 001-010 validation(400) · 011 authentication(401) · 012 authorization(403) · 013-022 not found(404) · 023-034 infrastructure(500) · 035-048 business logic · 049-050 external dependency(502/503) · 051-052 catch-all(500).
-- **UNRESOLVED — do not enforce; report (C-01):** `MODULE_NUM` policy - reference service A fixes `00` and uses banding; reference service B uses `MM` = source file/area (01..07) with per-file sequences and no banding. Follow the target repo's policy; do not change codes already shipped; propose (do not decide) a functional-module policy.
+- **Verified convention:** Sequence banding (service-registry convention + config catalog): 001-010 validation(400) · 011 authentication(401) · 012 authorization(403) · 013-022 not found(404) · 023-034 infrastructure(500) · 035-048 business logic · 049-050 external dependency(502/503) · 051-052 catch-all(500).
+- **DECIDED (C-01, approved 2026-11-16):** Approved: keep the 8-digit P+SS+MM+EEE format; MM = functional module (not source file); migrate legacy 50xxx / INXT50xxx schemes; category banding of sequences is optional (confirm). _Earlier note (superseded where it conflicts):_ `MODULE_NUM` policy - reference service A fixes `00` and uses banding; reference service B uses `MM` = source file/area (01..07) with per-file sequences and no banding. Follow the target repo's policy; do not change codes already shipped; propose (do not decide) a functional-module policy.
 - **MANDATORY (prohibition) extend legacy schemes:** `error-codes.ts` (`50` + HTTP status, e.g. `50404`) and vendored `HttpError` (`INXT50` + HTTP status) - they are legacy (C-01).
 
 _Source of truth: `ERR-03`, `ERR-04`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 
 ## Implementation guidelines
 1. Read the target catalog header for its MM/banding rules and the service registry for `SERVICE_CODE`.
-2. Compute the code with `makeErrorCode(ss, mm, seq)` (or the exact padded concatenation if the package is absent - then report the missing dependency).
+2. Compute the code with the local helper `makeErrorCode(ss, mm, seq)` = `"1" + pad2(ss) + pad2(mm) + pad3(seq)`; never concatenate by hand elsewhere.
 3. Add a test that asserts format `^1\d{2}\d{2}\d{3}$` and uniqueness.
 
 ## Technology-specific guidance
@@ -57,7 +57,8 @@ _Source of truth: `ERR-03`, `ERR-04`. If this section and the catalog disagree, 
 
 ```ts
 const code = makeErrorCode(3, 4, 2);                 // "10304002" -> platform 1, service 03, module 04, seq 002
-const prefix = makeServicePrefix(3);                  // "INXT103"
+export const makeErrorCode = (ss: number, mm: number, seq: number) =>
+  "1" + String(ss).padStart(2, "0") + String(mm).padStart(2, "0") + String(seq).padStart(3, "0");
 it("codes are unique and well-formed", () => {
   const nums = Object.values(EC).map((e) => e.num);
   expect(new Set(nums).size).toBe(nums.length);
@@ -104,9 +105,9 @@ it("codes are unique and well-formed", () => {
 15. Validate the finished implementation against this skill's checklist and the applicable standards before declaring completion.
 
 **Skill-specific mandatory rules (violating any of these is a defect):**
-- `numericCode = PLATFORM_CODE + SERVICE_CODE + MODULE_NUM + SEQ` as an **8-character string**: `PLATFORM_CODE` = `1` (always, 1 digit); `SERVICE_CODE` = 2 digits, zero-padded, registered per service (config 02, enforcement 03, ingestion 04, rollup 05, portal 06); `MODULE_NUM` = 2 digits, zero-padded; `SEQ` = 3 digits starting `001`, zero-padded. Example `makeErrorCode(3, 0, 1) -> "10300001"`.
-- Human-readable service prefix (when needed in a code string) is `"INXT1" + SS` (`makeServicePrefix(3) -> "INXT103"`).
-- New services register a **new** `SERVICE_CODE` in the shared registry; never reuse another service's.
+- `numericCode = PLATFORM_CODE + SERVICE_CODE + MODULE_NUM + SEQ` as an **8-character string**: `PLATFORM_CODE` = `1` (always, 1 digit); `SERVICE_CODE` = 2 digits, zero-padded, registered per service in the organization's service-code registry (observed: config 02, enforcement 03, ingestion 04, rollup 05, portal 06 - registry owner/location to be confirmed); `MODULE_NUM` = 2 digits, zero-padded; `SEQ` = 3 digits starting `001`, zero-padded. Example `makeErrorCode(3, 0, 1) -> "10300001"`.
+- Human-readable service prefix (when needed in a code string) is `"INXT1" + SS` (for example `INXT103`).
+- New services register a **new** `SERVICE_CODE` in the service-code registry; never reuse another service's.
 - Uniqueness is per `(SERVICE_CODE, MODULE_NUM, SEQ)`; a number is never reused or changed once released; duplicates are prevented by a catalog test and code review.
 - `SERVICE_CODE` is a single constant imported by the catalog and the logger configuration (reference defect: `"02"` in the catalog vs `"102"` in logger bootstrap); do not read it from env with literal fallbacks.
 - MUST NOT: `error-codes.ts` (`50` + HTTP status, e.g. `50404`) and vendored `HttpError` (`INXT50` + HTTP status) - they are legacy (C-01).

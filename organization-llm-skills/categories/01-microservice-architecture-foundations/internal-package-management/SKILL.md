@@ -26,12 +26,12 @@ Ensures internal packages are used instead of public alternatives and that regis
 - Reviewing `package.json` changes.
 
 ## Organizational standards
-- **MANDATORY:** Use `@inextlabs/logger` (logging), `@inextlabs/platform-errors` (`AppError`, `formatError`), `@inextlabs/azure-oauth` (`validateAuthToken`, `generateAuthToken`), `@inextlabs/inflow-usage-utils` (`makeErrorCode`, `withRetry`, event IDs, Mongo URI helpers, correlation helpers - usage-platform services), `@inextlabs/schema-models` (shared Mongoose models).
+- **MANDATORY:** Use `@inextlabs/logger` (logging), `@inextlabs/platform-errors` (`AppError`, `formatError`), `@inextlabs/azure-oauth` (`validateAuthToken`, `generateAuthToken`), `@inextlabs/schema-models` (shared Mongoose models). `@inextlabs/inflow-usage-utils` is usage-platform specific and is **not** part of this ecosystem: do not add it for generic concerns; implement small local helpers (error-code builder, header constants, URI masking) per the relevant skills.
 - **MANDATORY:** `.npmrc` contains `@inextlabs:registry=https://npm.pkg.github.com/inextlabs/` and the token **only** as `${AuthToken}` (environment variable); no literal token ever committed.
 - **MANDATORY:** Docker build takes `ARG AuthToken`, runs `npm ci`, then deletes `.npmrc` before the image is finalized.
 - **MANDATORY:** If a needed internal package is not installed in the target, report it; do not substitute a public library.
 - **Configurable:** Foundational packages (`logger`, `platform-errors`) are pinned to exact versions in the reference (`1.0.4`, `1.0.1`); others use `^`.
-- **Verified convention:** Do not use `@inextlabs/inflow-usage-utils`' winston-based `createLogger` for logging; `@inextlabs/logger` is the logger (C-02).
+- **Verified convention:** A service's logger is `@inextlabs/logger`; no other logging library is introduced (C-02).
 
 _Source of truth: `PKG-01`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 
@@ -98,7 +98,7 @@ _Source of truth: `PKG-01`. If this section and the catalog disagree, the catalo
 15. Validate the finished implementation against this skill's checklist and the applicable standards before declaring completion.
 
 **Skill-specific mandatory rules (violating any of these is a defect):**
-- Use `@inextlabs/logger` (logging), `@inextlabs/platform-errors` (`AppError`, `formatError`), `@inextlabs/azure-oauth` (`validateAuthToken`, `generateAuthToken`), `@inextlabs/inflow-usage-utils` (`makeErrorCode`, `withRetry`, event IDs, Mongo URI helpers, correlation helpers - usage-platform services), `@inextlabs/schema-models` (shared Mongoose models).
+- Use `@inextlabs/logger` (logging), `@inextlabs/platform-errors` (`AppError`, `formatError`), `@inextlabs/azure-oauth` (`validateAuthToken`, `generateAuthToken`), `@inextlabs/schema-models` (shared Mongoose models). `@inextlabs/inflow-usage-utils` is usage-platform specific and is **not** part of this ecosystem: do not add it for generic concerns; implement small local helpers (error-code builder, header constants, URI masking) per the relevant skills.
 - `.npmrc` contains `@inextlabs:registry=https://npm.pkg.github.com/inextlabs/` and the token **only** as `${AuthToken}` (environment variable); no literal token ever committed.
 - Docker build takes `ARG AuthToken`, runs `npm ci`, then deletes `.npmrc` before the image is finalized.
 - If a needed internal package is not installed in the target, report it; do not substitute a public library.

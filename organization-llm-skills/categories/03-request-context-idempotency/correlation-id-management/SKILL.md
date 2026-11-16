@@ -28,9 +28,9 @@ One ID follows a business request across services, logs, errors and async work.
 ## Organizational standards
 - **MANDATORY:** Header is `x-correlation-id` (case-insensitive). Resolve-or-generate (`randomUUID()`) **before** auth and error handling; bind to `AsyncLocalStorage`; echo it as a response header, in every envelope `metadata.correlationId`, in every log line, on every outbound call and in message `applicationProperties.correlationId`. Never fatal when missing (`"unknown"`).
 - **MANDATORY (ADR default):** Public/untrusted callers' values are ignored and regenerated; a supplied value is kept only from a trusted internal caller; accepted IDs are validated (strict charset, max length); invalid ones are regenerated (no 400); **no** `x-request-id` fallback; the body/query can never set it; correlation, request ID and trace ID are three different identifiers.
-- **UNRESOLVED — do not enforce; report (C-08):** Both reference implementations accept any non-empty inbound value and fall back to `x-request-id`, validate nothing, and have no trusted-caller mechanism. For new or modified code implement the ADR default if a trust mechanism is available; otherwise keep existing behaviour, add the validation (charset/length), and report the gap. Never widen acceptance.
+- **DECIDED (C-08, approved 2026-11-16):** Approved: ADR default for new/modified code - validated IDs, trusted-caller policy, no x-request-id fallback, one implementation per service. _Earlier note (superseded where it conflicts):_ Both reference implementations accept any non-empty inbound value and fall back to `x-request-id`, validate nothing, and have no trusted-caller mechanism. For new or modified code implement the ADR default if a trust mechanism is available; otherwise keep existing behaviour, add the validation (charset/length), and report the gap. Never widen acceptance.
 - **MANDATORY:** Exactly one correlation mechanism per service; do not run a parallel request-id system (reference defect `requestTelemetry.middleware`).
-- **MANDATORY:** Consume helpers from the shared package (`getOrCreateCorrelationId`, `runWithCorrelationId`, `HEADERS`) where installed instead of vendoring copies (C-08).
+- **MANDATORY:** Implement correlation helpers (`getOrCreateCorrelationId`, `runWithCorrelationId`, `getCorrelationId`) once in the service's shared-infra zone and reuse them everywhere (no duplicate copies, C-08).
 
 _Source of truth: `CTX-01`, `CTX-02`, `API-04`, `OBS-01`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 
@@ -108,7 +108,7 @@ export function correlationIdMiddleware(req: Request, res: Response, next: NextF
 - Header is `x-correlation-id` (case-insensitive). Resolve-or-generate (`randomUUID()`) **before** auth and error handling; bind to `AsyncLocalStorage`; echo it as a response header, in every envelope `metadata.correlationId`, in every log line, on every outbound call and in message `applicationProperties.correlationId`. Never fatal when missing (`"unknown"`).
 - Public/untrusted callers' values are ignored and regenerated; a supplied value is kept only from a trusted internal caller; accepted IDs are validated (strict charset, max length); invalid ones are regenerated (no 400); **no** `x-request-id` fallback; the body/query can never set it; correlation, request ID and trace ID are three different identifiers.
 - Exactly one correlation mechanism per service; do not run a parallel request-id system (reference defect `requestTelemetry.middleware`).
-- Consume helpers from the shared package (`getOrCreateCorrelationId`, `runWithCorrelationId`, `HEADERS`) where installed instead of vendoring copies (C-08).
+- Implement correlation helpers (`getOrCreateCorrelationId`, `runWithCorrelationId`, `getCorrelationId`) once in the service's shared-infra zone and reuse them everywhere (no duplicate copies, C-08).
 
 ## Related skills
 - `request-context-propagation` — Request Context Propagation

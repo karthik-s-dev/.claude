@@ -403,7 +403,7 @@
   "cls": "VERIFIED (CTX-04)",
   "std": "CTX-04, MSG-01, MSG-04",
   "rel": "idempotency-management, message-deduplication, message-idempotency, azure-service-bus-client, event-publishing, request-deduplication",
-  "add": "Deterministic event IDs shared between producer and consumers via the shared package are a distinct organizational practice (effect-level dedupe) needed for any metering/event service and not listed in the predefined inventory.",
+  "add": "Deterministic event IDs shared between producer and consumers between producer and consumers are a distinct organizational practice (effect-level dedupe) needed for any metering/event service and not listed in the predefined inventory.",
   "path": "categories/03-request-context-idempotency/usage-event-identity/SKILL.md"
  },
  {

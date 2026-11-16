@@ -28,7 +28,7 @@ Isolate persistence from business logic and make it testable.
 - **MANDATORY:** One module per aggregate (`<aggregate>.repository.ts` in aliased repos; `<aggregate>-repository.ts` in flat repo - follow target) exposing intent-named functions (`fetchPendingUsageEvents`, `markUsageEventPublished`), plus `ensureXIndexes()` and `closeX()`.
 - **MANDATORY:** Services never call `collection.*`/model methods directly (reference gap in the aliased repo; do not extend it).
 - **MANDATORY:** Return domain types, not driver cursors; convert `ObjectId` at the boundary.
-- **Verified convention:** Small inline retry for transient write conflicts (`MAX_RETRY_ATTEMPTS=3`, `RETRY_DELAY_MS=100`) in a repository; prefer the shared `withRetry` when adopted (`retry-policy`).
+- **Verified convention:** Small inline retry for transient write conflicts (`MAX_RETRY_ATTEMPTS=3`, `RETRY_DELAY_MS=100`) in a repository; prefer one local retry helper (`retry-policy`).
 - **Verified convention:** State machines on documents use explicit statuses (`pending|published|failed`) and attempt counters.
 
 _Source of truth: `DB-03`, `ARCH-02`, `DB-04`, `ARCH-04`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._

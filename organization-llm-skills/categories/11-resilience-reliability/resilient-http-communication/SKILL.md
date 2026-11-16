@@ -29,7 +29,7 @@ Dependable inter-service calls.
 - **Verified convention:** timeout always set; token failure aborts; failures typed; durable outbox for notifications that cannot be lost; stale cache fallback.
 - **Not evidenced (gap) (generic baseline):** retries with backoff+jitter, HTTP circuit breaker, bulkhead, `AbortController` cancellation.
 - **MANDATORY:** Layer order: timeout -> (retry for idempotent only) -> breaker -> fallback -> typed error; document each in the integration module.
-- **MANDATORY:** Do not add `axios-retry`/`opossum`/`cockatiel` without approval; prefer `withRetry` from the shared package.
+- **MANDATORY:** Do not add `axios-retry`/`opossum`/`cockatiel` without approval; prefer one local `withRetry` helper.
 
 _Source of truth: `INT-01`, `RES-02`, `RES-03`, `RES-01`, `ERR-09`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 
@@ -90,7 +90,7 @@ const res = await withRetry(() => getDependencyClient().get("/subscriptions/" + 
 
 **Skill-specific mandatory rules (violating any of these is a defect):**
 - Layer order: timeout -> (retry for idempotent only) -> breaker -> fallback -> typed error; document each in the integration module.
-- Do not add `axios-retry`/`opossum`/`cockatiel` without approval; prefer `withRetry` from the shared package.
+- Do not add `axios-retry`/`opossum`/`cockatiel` without approval; prefer one local `withRetry` helper.
 
 ## Related skills
 - `external-api-client` — External API Client

@@ -1,6 +1,6 @@
 ---
 name: retry-policy
-description: Use when adding retries to outbound calls, datastore operations or background deliveries - which failures are retryable, attempt limits, delay, idempotency requirement and where retries live (client vs outbox). The shared withRetry exists but is unused in the references; outbox attempts and Redis retryStrategy are the evidenced forms.
+description: Use when adding retries to outbound calls, datastore operations or background deliveries - which failures are retryable, attempt limits, delay, idempotency requirement and where retries live (client vs outbox). No shared retry helper is approved; outbox attempts and Redis retryStrategy are the evidenced forms.
 ---
 
 # Retry Policy
@@ -26,11 +26,11 @@ Bounded, safe retries that do not amplify outages.
 - A transient dependency failure is expected.
 
 ## Organizational standards
-- **Verified convention forms:** outbox `attempts` with max (`*_MAX_ATTEMPTS`), Redis `retryStrategy: min(times*200, cap)`, inline Mongo retry `MAX_RETRY_ATTEMPTS=3`/`RETRY_DELAY_MS=100`, webhook `WEBHOOK_DELIVERY_MAX_ATTEMPTS`, shared `withRetry(fn, { maxAttempts, delayMs, backoffMultiplier, maxDelayMs })` (exported by `@inextlabs/inflow-usage-utils`, **unused** by the reference services).
+- **Verified convention forms:** outbox `attempts` with max (`*_MAX_ATTEMPTS`), Redis `retryStrategy: min(times*200, cap)`, inline Mongo retry `MAX_RETRY_ATTEMPTS=3`/`RETRY_DELAY_MS=100`, webhook `WEBHOOK_DELIVERY_MAX_ATTEMPTS`. No retry helper is used by either reference service.
 - **MANDATORY:** Retry only idempotent or idempotency-keyed operations and only transient failures (timeouts, connection resets, 5xx, 429 with `Retry-After`); never retry 4xx validation/auth errors.
 - **MANDATORY:** Attempts and delays are configurable with safe defaults; every retry logs `warn` with attempt number and `err`; exhaustion raises the typed unavailable error.
 - **MANDATORY:** Request-path retries consume the request's timeout budget; durable work retries through the outbox, not in the request.
-- **Generic baseline (provisional):** Use `withRetry` from the shared package where installed instead of hand-rolled loops; add jitter.
+- **Generic baseline (provisional):** Implement one local `withRetry(fn, { maxAttempts, delayMs, backoffMultiplier, maxDelayMs })` helper per service instead of hand-rolled loops; add jitter.
 
 _Source of truth: `RES-03`, `INT-01`, `MSG-03`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 
@@ -48,7 +48,7 @@ _Source of truth: `RES-03`, `INT-01`, `MSG-03`. If this section and the catalog 
 - Preserve every Layer A rule. If the target uses a different language/framework, write the smallest adapter that keeps the same contract (names, headers, codes, envelope), mark it *adapter pending approval*, and ask for approval before adopting a new library. Do not invent an approved implementation.
 
 ## Code examples
-**Using the shared helper**
+**Using a local helper (GENERIC)**
 
 ```ts
 const data = await withRetry(() => callDependency(id), { maxAttempts: 3, delayMs: 200, backoffMultiplier: 2, maxDelayMs: 2000 });

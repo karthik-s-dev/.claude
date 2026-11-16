@@ -28,7 +28,7 @@ Every failure has a stable identity (code + numericCode + HTTP status + safe mes
 ## Organizational standards
 - **MANDATORY:** One catalog per service as a `const` map; entries `{ numericCode | num, httpStatus | http, code, message }`; the service also defines `UNHANDLED_ERROR` (catch-all) - ERR-02.
 - **MANDATORY:** Errors are thrown as `AppError(statusCode, code, numericCode, message, details?)` from `@inextlabs/platform-errors`, via a catalog helper (`throwXError(key, details?)` or `appErr(entry, details?)`); never `throw new Error()` for expected failures.
-- **MANDATORY:** `numericCode` follows `PLATFORM_CODE + SERVICE_CODE + MODULE_NUM + SEQ` (8 digits; see `error-code-standards`); build with `makeErrorCode` from `@inextlabs/inflow-usage-utils` where installed.
+- **MANDATORY:** `numericCode` follows `PLATFORM_CODE + SERVICE_CODE + MODULE_NUM + SEQ` (8 digits; see `error-code-standards`); build it with the service's single local `makeErrorCode(ss, mm, seq)` helper (see `error-code-standards`).
 - **MANDATORY:** Codes are append-only: never reuse, renumber or rename; deprecate by comment, keep the entry.
 - **MANDATORY:** Messages are generic, safe, human-readable and **never** parsed by clients or code.
 - **MANDATORY:** Group entries and comment the scheme/ranges at the top; document reserved ranges in comments.
@@ -112,7 +112,7 @@ export function throwServiceError(key: ErrorCodeKey, details?: unknown): never {
 **Skill-specific mandatory rules (violating any of these is a defect):**
 - One catalog per service as a `const` map; entries `{ numericCode | num, httpStatus | http, code, message }`; the service also defines `UNHANDLED_ERROR` (catch-all) - ERR-02.
 - Errors are thrown as `AppError(statusCode, code, numericCode, message, details?)` from `@inextlabs/platform-errors`, via a catalog helper (`throwXError(key, details?)` or `appErr(entry, details?)`); never `throw new Error()` for expected failures.
-- `numericCode` follows `PLATFORM_CODE + SERVICE_CODE + MODULE_NUM + SEQ` (8 digits; see `error-code-standards`); build with `makeErrorCode` from `@inextlabs/inflow-usage-utils` where installed.
+- `numericCode` follows `PLATFORM_CODE + SERVICE_CODE + MODULE_NUM + SEQ` (8 digits; see `error-code-standards`); build it with the service's single local `makeErrorCode(ss, mm, seq)` helper (see `error-code-standards`).
 - Codes are append-only: never reuse, renumber or rename; deprecate by comment, keep the entry.
 - Messages are generic, safe, human-readable and **never** parsed by clients or code.
 - Group entries and comment the scheme/ranges at the top; document reserved ranges in comments.

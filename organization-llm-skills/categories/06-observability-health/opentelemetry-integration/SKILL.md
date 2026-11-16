@@ -1,6 +1,6 @@
 ---
 name: opentelemetry-integration
-description: Use when a service integrates OpenTelemetry through the shared package - initOtelLogging at startup, OTEL_* environment variables, OTLP and Application Insights export targets. Records the spike status so wiring is not assumed complete.
+description: Use when a service integrates OpenTelemetry - a single service-local init at startup, OTEL_* environment variables, OTLP and Application Insights export targets. Records the spike status so wiring is not assumed complete.
 ---
 
 # OpenTelemetry Integration
@@ -10,8 +10,8 @@ description: Use when a service integrates OpenTelemetry through the shared pack
 |---|---|
 | Skill name | `opentelemetry-integration` |
 | Category | 06 — Observability & Health Management |
-| Scope | OTEL setup per the shared package. |
-| Applicability | Node services using `@inextlabs/inflow-usage-utils`. |
+| Scope | OTEL setup per service. |
+| Applicability | Node services (one reference service used an OTEL spike). |
 | Evidence | E2 — single repository, repeated and/or tested |
 | Classification | TECH (single repo, spike) / UNRESOLVED (C-10) |
 | Governing standards | `CTX-05`, `OBS-05`, `PKG-01` (defined in `standards/organization-engineering-standards.md`) |
@@ -24,15 +24,15 @@ Standard, vendor-neutral telemetry export.
 - Bootstrapping a usage-platform service.
 
 ## Organizational standards
-- **MANDATORY:** Call `initOtelLogging({ serviceName, environment })` once at process start **before** any logger usage (reference index.ts).
-- **Verified convention:** The shared helper reads `OTEL_SERVICE_NAME`, `OTEL_SDK_DISABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_LOGS_CONSOLE`, `APPLICATIONINSIGHTS_CONNECTION_STRING` and documents export targets; **it is a spike**: full SDK wiring (LoggerProvider/OTLP exporters, `@opentelemetry/sdk-node`) lives in each service. Exporters are configured in the service or an OTEL Collector.
+- **MANDATORY:** Initialise OTEL once at process start **before** any logger usage, in a service-local module (the reference calls an `initOtelLogging`-style function at the top of the entry file).
+- **Verified convention:** The reference init reads `OTEL_SERVICE_NAME`, `OTEL_SDK_DISABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_LOGS_CONSOLE`, `APPLICATIONINSIGHTS_CONNECTION_STRING` and documents export targets; **it was a spike**: full SDK wiring (LoggerProvider/OTLP exporters, `@opentelemetry/sdk-node`) must live in the service. Exporters are configured in the service or an OTEL Collector.
 - **MANDATORY:** Do not claim traces/metrics are exported until the SDK wiring exists in the target; verify.
 - **Generic baseline (provisional):** Prefer OTLP to a collector; keep `OTEL_SDK_DISABLED=true` available for tests.
 
 _Source of truth: `CTX-05`, `OBS-05`, `PKG-01`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 
 ## Implementation guidelines
-1. Add `initOtelLogging` call; document env vars in `.env.example`; add SDK packages only with approval.
+1. Add the init call; document env vars in `.env.example`; add SDK packages only with approval.
 
 ## Technology-specific guidance
 **Layer A — organizational contract (identical in every stack)**
@@ -48,7 +48,7 @@ _Source of truth: `CTX-05`, `OBS-05`, `PKG-01`. If this section and the catalog 
 **Init**
 
 ```ts
-const otel = initOtelLogging({ serviceName: "<service-name>", environment: process.env.NODE_ENV ?? "production" });
+const otel = initTelemetry({ serviceName: "<service-name>", environment: process.env.NODE_ENV ?? "production" });
 ```
 
 ## Error and failure handling
@@ -88,7 +88,7 @@ const otel = initOtelLogging({ serviceName: "<service-name>", environment: proce
 15. Validate the finished implementation against this skill's checklist and the applicable standards before declaring completion.
 
 **Skill-specific mandatory rules (violating any of these is a defect):**
-- Call `initOtelLogging({ serviceName, environment })` once at process start **before** any logger usage (reference index.ts).
+- Initialise OTEL once at process start **before** any logger usage, in a service-local module (the reference calls an `initOtelLogging`-style function at the top of the entry file).
 - Do not claim traces/metrics are exported until the SDK wiring exists in the target; verify.
 
 ## Related skills

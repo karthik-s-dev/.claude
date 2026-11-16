@@ -26,7 +26,7 @@ Bounded, deterministic list responses.
 
 ## Organizational standards
 - **MANDATORY:** Lists are bounded (server maximum) and deterministically ordered with a unique tiebreaker (`{ lastEventAt: -1, _id: 1 }`).
-- **UNRESOLVED — do not enforce; report:** Three shapes exist - `pagination:{ page, limit, totalItems, totalPages, hasNextPage }` in `data` (reference service A, inconsistently applied), `pagination:{ page, pageSize, totalItems, totalPages }` (reference service B), and `metadata.pagination:{ limit, offset, total, hasMore }` (shared package) (C-09). Use the shape already used by the target service; do not add a fourth; do not mix shapes within a service.
+- **DECIDED (C-09, approved 2026-11-16):** Approved: one pagination shape per estate; adopted shape is data.pagination { page, limit, totalItems, totalPages, hasNextPage } (chosen to match C-06 - confirm). _Earlier note (superseded where it conflicts):_ Three shapes exist - `pagination:{ page, limit, totalItems, totalPages, hasNextPage }` in `data` (reference service A, inconsistently applied), `pagination:{ page, pageSize, totalItems, totalPages }` (reference service B), (C-09; decided - see below). Use the shape already used by the target service; do not add a fourth; do not mix shapes within a service.
 - **Verified convention:** Mongo implementation uses a single aggregation with `$facet` (`items` with `$sort/$skip/$limit`, `total` count) and `Math.ceil(total/pageSize)`.
 
 _Source of truth: `API-06`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._

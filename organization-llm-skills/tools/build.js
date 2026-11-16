@@ -161,9 +161,39 @@ function splitTag(l) {
   if (!base) return null;
   return { base, qual: prefix.slice(base.length).trim(), text: m[2] };
 }
+
+// Owner decisions (conflicts-and-open-decisions.md, approved 2026-11-16: "ok with recommendation").
+const RESOLVED = {
+  "C-01": "Approved: keep the 8-digit P+SS+MM+EEE format; MM = functional module (not source file); migrate legacy 50xxx / INXT50xxx schemes; category banding of sequences is optional (confirm).",
+  "C-01b": "Approved: wrap stray errors with toAppError (UNHANDLED_ERROR, cause kept for logs).",
+  "C-02": "Approved: @inextlabs/logger only, Pino argument order, configure before imports; remove the unused winston dependency.",
+  "C-03": "Approved: one declarative schema is the single source (Zod acceptable); dependency reachability checks are a separate startup step.",
+  "C-05": "Approved: prefer @inextlabs/azure-oauth; ask its owner for catalogued error bodies, no console logging and client-claim binding; do not hand-roll in new services without approval.",
+  "C-06": "Approved: every success response uses the envelope { success, message, data, metadata:{ correlationId, timestamp } }.",
+  "C-07": "Approved: the ADR default is the target (Idempotency-Key header only, relational store for new services, IDEMPOTENCY_KEY_REUSED / IDEMPOTENCY_IN_PROGRESS); the Redis implementation is a documented deviation.",
+  "C-08": "Approved: ADR default for new/modified code - validated IDs, trusted-caller policy, no x-request-id fallback, one implementation per service.",
+  "C-09": "Approved: one pagination shape per estate; adopted shape is data.pagination { page, limit, totalItems, totalPages, hasNextPage } (chosen to match C-06 - confirm).",
+  "C-12": "Approved: add no new security-relax flags; existing ones must be guarded so they never apply in production.",
+  "C-13": "Approved: plan migration of messaging to Managed Identity; connection strings stay until adapters are approved.",
+  "C-14": "Approved: follow the target repo; use resource-oriented routes for new CRUD-like APIs.",
+  "C-15": "Approved: new services expose /health/live and /health/ready.",
+  "C-16": "Approved: adopt the singleton client + interceptor + null-vs-typed-error shape; retry/breaker stay GENERIC.",
+  "C-17": "Approved: follow the target repo's naming and layout.",
+  "C-18": "Approved: spec-as-test; gate documentation for non-public APIs.",
+  "C-19": "Approved: replace cross-service cache reads with an API/event contract.",
+  "C-20": "Approved: use the multi-stage, non-root, dumb-init, HEALTHCHECK Dockerfile pattern; the Node LTS version to align on is still open.",
+  "C-21": "Approved: immutable SHA tags and tests gate the build; which package manager to standardise on is still open.",
+  "C-22": "Approved: stop workers, drain HTTP (bounded), close dependencies, flush logger, exit.",
+};
+function resolvedFor(t) {
+  const m = (t.qual + " " + t.text).match(/C-\d+b?/g) || [];
+  const id = m.find((x) => RESOLVED[x]);
+  return id ? { id, text: RESOLVED[id] } : null;
+}
 function tagLine(l) {
   const t = splitTag(l);
   if (!t) return "- " + l;
+  if (t.base === "UNRESOLVED") { const r = resolvedFor(t); if (r) return `- **DECIDED (${r.id}, approved 2026-11-16):** ${r.text} _Earlier note (superseded where it conflicts):_ ${t.text}`; }
   return `- **${TAGS[t.base]}${t.qual ? " " + t.qual : ""}:** ${t.text}`;
 }
 const bullets = (a) => a.map((x) => "- " + x).join("\n");

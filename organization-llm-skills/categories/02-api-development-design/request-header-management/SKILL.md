@@ -26,7 +26,7 @@ Single place for header names and rules so propagation never drifts.
 - Changing CORS `allowedHeaders`/`exposedHeaders`.
 
 ## Organizational standards
-- **MANDATORY:** Use the shared `HEADERS` constants (lowercase): `x-correlation-id`, `idempotency-key`, `x-internal-api-key`, `x-internal-api-caller`, `client-id`, `bot-id`, `authorization`, `retry-after`, `deprecation`, `sunset`, `link`. Do not hard-code literals in handlers (C-08: do not vendor a copy of the constants).
+- **MANDATORY:** Use the service's single `HEADERS` constants module (lowercase): `x-correlation-id`, `idempotency-key`, `x-internal-api-key`, `x-internal-api-caller`, `client-id`, `bot-id`, `authorization`, `retry-after`, `deprecation`, `sunset`, `link`. Do not hard-code literals in handlers (one constants module per service; no duplicated copies).
 - **MANDATORY:** Outbound internal calls send `x-correlation-id`, `x-internal-api-key`, `x-internal-api-caller: <this-service>` (CTX-02); calls to Entra-protected APIs add `Authorization: Bearer <token>`.
 - **MANDATORY:** Read headers case-insensitively; take the first value of array headers; trim.
 - **MANDATORY:** CORS `allowedHeaders` lists every custom request header and `exposedHeaders` includes `x-correlation-id`.
@@ -36,7 +36,7 @@ Single place for header names and rules so propagation never drifts.
 _Source of truth: `API-04`, `CTX-01`, `CTX-02`, `CTX-03`, `SEC-03`, `SEC-05`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 
 ## Implementation guidelines
-1. Import `HEADERS` from the shared package (or the repo's single constants module).
+1. Import `HEADERS` from the repo's single constants module (create it if missing).
 2. Build outbound headers in one helper per integration.
 3. Update CORS when adding a header.
 
@@ -101,7 +101,7 @@ const headers = {
 15. Validate the finished implementation against this skill's checklist and the applicable standards before declaring completion.
 
 **Skill-specific mandatory rules (violating any of these is a defect):**
-- Use the shared `HEADERS` constants (lowercase): `x-correlation-id`, `idempotency-key`, `x-internal-api-key`, `x-internal-api-caller`, `client-id`, `bot-id`, `authorization`, `retry-after`, `deprecation`, `sunset`, `link`. Do not hard-code literals in handlers (C-08: do not vendor a copy of the constants).
+- Use the service's single `HEADERS` constants module (lowercase): `x-correlation-id`, `idempotency-key`, `x-internal-api-key`, `x-internal-api-caller`, `client-id`, `bot-id`, `authorization`, `retry-after`, `deprecation`, `sunset`, `link`. Do not hard-code literals in handlers (one constants module per service; no duplicated copies).
 - Outbound internal calls send `x-correlation-id`, `x-internal-api-key`, `x-internal-api-caller: <this-service>` (CTX-02); calls to Entra-protected APIs add `Authorization: Bearer <token>`.
 - Read headers case-insensitively; take the first value of array headers; trim.
 - CORS `allowedHeaders` lists every custom request header and `exposedHeaders` includes `x-correlation-id`.

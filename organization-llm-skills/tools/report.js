@@ -55,6 +55,7 @@ for (const s of manifest) {
   if (s.ev === "E0" && !/GENERIC/.test(txt)) issues.push("E0 skill lacks GENERIC labeling");
   if (s.ev !== "E0" && !/\*\*(MANDATORY|Verified convention|Technology-specific|Configurable)/.test(txt)) warns.push("no mandatory/verified items");
   const m = txt.match(FORBID_NAMES); if (m) issues.push("service-specific name: " + m[0]);
+  if (s.slug !== "internal-package-management" && /usage-utils|makeServicePrefix|buildUsageEventId|deriveUsageEventId/.test(txt)) issues.push("depends on excluded package inflow-usage-utils");
   if (SECRET.test(txt)) issues.push("possible secret pattern");
   txt.split("\n").forEach((ln, i) => { if (COMPETING.test(ln) && !NEG.test(ln) && !ln.startsWith("```")) warns.push(`competing-lib mention without qualifier L${i + 1}: ${ln.slice(0, 90)}`); });
   if (!/```/.test(txt) && !/procedural/.test(txt)) warns.push("no code example");

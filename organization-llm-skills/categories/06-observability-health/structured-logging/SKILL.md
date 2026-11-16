@@ -27,7 +27,7 @@ Uniform, searchable, safe JSON logs correlated across services.
 - Reviewing logs for noise, PII or missing correlation.
 
 ## Organizational standards
-- **MANDATORY:** Import the logger from the service's single logger module, which wraps `@inextlabs/logger`. No other logging library (`console`, `pino`, `winston`, `bunyan`, usage-utils' winston `createLogger`) may be added (PKG-01, C-02). `winston` appearing in a manifest is an unused dependency to report, not a pattern.
+- **MANDATORY:** Import the logger from the service's single logger module, which wraps `@inextlabs/logger`. No other logging library (`console`, `pino`, `winston`, `bunyan`, any other logger) may be added (PKG-01, C-02). `winston` appearing in a manifest is an unused dependency to report, not a pattern.
 - **MANDATORY:** Use **Pino argument order**: `logger.info({ field: value }, "message")`; errors as `logger.error(err, "message")` or `{ err: serializeError(err) }`. The legacy `(message, meta)` order (Winston style) must not appear in new code.
 - **MANDATORY:** Levels `trace | debug | info | warn | error | fatal` (see `log-level-standards`); output is JSON with `service`, `environment`, `version`, `level`, `time`, `pid`, `hostname`, `msg` (guaranteed by the package).
 - **MANDATORY:** `correlationId` is added automatically by the service wrapper from async context (do not pass it manually in every call).
@@ -35,7 +35,7 @@ Uniform, searchable, safe JSON logs correlated across services.
 - **MANDATORY:** Log structured fields, never string-concatenated payloads; never log request bodies, tokens, keys, connection strings or PII (mask via `sensitive-data-masking-in-logs`).
 - **MANDATORY:** The error middleware logs once per error with route metadata only (`error-logging`).
 - **Verified convention:** Wrapper keeps the package's call shape `(obj | Error | msg, msg?)` and adds `correlationId` from AsyncLocalStorage; `closeLogger()` calls the package `close()` during shutdown to flush the optional Event Hub sink.
-- **UNRESOLVED — do not enforce; report (C-02):** One reference service uses a `FlexibleLogger` accepting legacy `(msg, meta)` and passes `correlationId` manually. Do not copy; in that repo new code uses `(meta, msg)`.
+- **DECIDED (C-02, approved 2026-11-16):** Approved: @inextlabs/logger only, Pino argument order, configure before imports; remove the unused winston dependency. _Earlier note (superseded where it conflicts):_ One reference service uses a `FlexibleLogger` accepting legacy `(msg, meta)` and passes `correlationId` manually. Do not copy; in that repo new code uses `(meta, msg)`.
 
 _Source of truth: `OBS-01`, `OBS-02`, `OBS-03`, `CTX-01`, `ERR-06`, `PKG-01`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 
@@ -121,7 +121,7 @@ logger.error(err, "Startup error");
 15. Validate the finished implementation against this skill's checklist and the applicable standards before declaring completion.
 
 **Skill-specific mandatory rules (violating any of these is a defect):**
-- Import the logger from the service's single logger module, which wraps `@inextlabs/logger`. No other logging library (`console`, `pino`, `winston`, `bunyan`, usage-utils' winston `createLogger`) may be added (PKG-01, C-02). `winston` appearing in a manifest is an unused dependency to report, not a pattern.
+- Import the logger from the service's single logger module, which wraps `@inextlabs/logger`. No other logging library (`console`, `pino`, `winston`, `bunyan`, any other logger) may be added (PKG-01, C-02). `winston` appearing in a manifest is an unused dependency to report, not a pattern.
 - Use **Pino argument order**: `logger.info({ field: value }, "message")`; errors as `logger.error(err, "message")` or `{ err: serializeError(err) }`. The legacy `(message, meta)` order (Winston style) must not appear in new code.
 - Levels `trace | debug | info | warn | error | fatal` (see `log-level-standards`); output is JSON with `service`, `environment`, `version`, `level`, `time`, `pid`, `hostname`, `msg` (guaranteed by the package).
 - `correlationId` is added automatically by the service wrapper from async context (do not pass it manually in every call).

@@ -26,13 +26,13 @@ Secretless access wherever supported.
 ## Organizational standards
 - **Verified convention:** Used for outbound upstream-service calls (token with `AZURE_SERVICE_OAUTH_SCOPE`); local runs use developer credentials via `DefaultAzureCredential` or run unauthenticated when the scope is unset in non-production.
 - **MANDATORY:** New Azure integrations default to Managed Identity when the SDK supports it and approval exists; otherwise follow `azure-service-connection-management`.
-- **UNRESOLVED — do not enforce; report (C-13):** Service Bus/Queue Storage/Redis/Mongo use connection strings/keys; migration to identity-based access is pending approval.
+- **DECIDED (C-13, approved 2026-11-16):** Approved: plan migration of messaging to Managed Identity; connection strings stay until adapters are approved. _Earlier note (superseded where it conflicts):_ Service Bus/Queue Storage/Redis/Mongo use connection strings/keys; migration to identity-based access is pending approval.
 - **MANDATORY:** Document required role assignments (e.g. "Azure Service Bus Data Sender") in `deployment-documentation`.
 
 _Source of truth: `SEC-02`, `CFG-07`, `INT-06`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 
 ## Implementation guidelines
-1. Use `DefaultAzureCredential` only through the shared package for tokens; for SDK clients pass the credential object when approved.
+1. Use `generateAuthToken()` from `@inextlabs/azure-oauth` (wraps `DefaultAzureCredential`) for tokens; for SDK clients pass the credential object when approved.
 
 ## Technology-specific guidance
 **Layer A — organizational contract (identical in every stack)**

@@ -420,7 +420,7 @@ when:
 - Reviewing unbounded list endpoints.
 org:
 - MUST: Lists are bounded (server maximum) and deterministically ordered with a unique tiebreaker (`{ lastEventAt: -1, _id: 1 }`).
-- UNRESOLVED: Three shapes exist - `pagination:{ page, limit, totalItems, totalPages, hasNextPage }` in `data` (reference service A, inconsistently applied), `pagination:{ page, pageSize, totalItems, totalPages }` (reference service B), and `metadata.pagination:{ limit, offset, total, hasMore }` (shared package) (C-09). Use the shape already used by the target service; do not add a fourth; do not mix shapes within a service.
+- UNRESOLVED: Three shapes exist - `pagination:{ page, limit, totalItems, totalPages, hasNextPage }` in `data` (reference service A, inconsistently applied), `pagination:{ page, pageSize, totalItems, totalPages }` (reference service B), (C-09; decided - see below). Use the shape already used by the target service; do not add a fourth; do not mix shapes within a service.
 - VERIFIED: Mongo implementation uses a single aggregation with `$facet` (`items` with `$sort/$skip/$limit`, `total` count) and `Math.ceil(total/pageSize)`.
 impl:
 - Add `page`/`limit` (or `pageSize`) to the query schema with max.

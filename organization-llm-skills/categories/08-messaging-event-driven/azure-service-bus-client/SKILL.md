@@ -30,7 +30,7 @@ Durable event publication with duplicate protection.
 - **MANDATORY:** Publish through the outbox when enabled (`outbox-pattern`); direct send only when disabled; failure is never silent (`api-response-structure` 207 + `auditPublished:false`).
 - **MANDATORY:** `isServiceBusConfigured()`; `SERVICE_BUS_MANDATORY` decides whether absence/outage is fatal at startup/readiness (`checkServiceBusHealth` creates a sender to prove credentials).
 - **MANDATORY:** `closeServiceBus()` closes senders then the client during shutdown.
-- **UNRESOLVED — do not enforce; report (C-13):** connection-string auth; Managed Identity not implemented. Consuming (receivers/sessions) is not implemented in either repo (E0) - see `message-consumer`.
+- **DECIDED (C-13, approved 2026-11-16):** Approved: plan migration of messaging to Managed Identity; connection strings stay until adapters are approved. _Earlier note (superseded where it conflicts):_ connection-string auth; Managed Identity not implemented. Consuming (receivers/sessions) is not implemented in either repo (E0) - see `message-consumer`.
 
 _Source of truth: `MSG-01`, `CTX-04`, `MSG-03`, `INT-06`, `CFG-01`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 

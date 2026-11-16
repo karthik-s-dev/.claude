@@ -1,6 +1,6 @@
 ---
 name: exponential-backoff
-description: Use when spacing retries - multiplier, cap, jitter. Reference code uses capped incremental delays (Redis min(times*200, 2000), config outbox min(60s*attempts, 15min)) and the shared withRetry backoffMultiplier; no jitter exists. Provides the generic baseline.
+description: Use when spacing retries - multiplier, cap, jitter. Reference code uses capped incremental delays (Redis min(times*200, 2000), config outbox min(60s*attempts, 15min)) and a generic backoff multiplier; no jitter exists. Provides the generic baseline.
 ---
 
 # Exponential Backoff
@@ -26,7 +26,7 @@ Avoid synchronized retries.
 - Implementing delays.
 
 ## Organizational standards
-- **Verified convention:** Capped incremental delays in Redis `retryStrategy` and the outbox; `withRetry` supports `backoffMultiplier` and `maxDelayMs`.
+- **Verified convention:** Capped incremental delays in Redis `retryStrategy` and the outbox; a generic helper supports a multiplier and `maxDelayMs`.
 - **Generic baseline (provisional):** `delay = min(maxDelay, base * 2^(attempt-1))` with full jitter `random(0, delay)`; document base/cap in config.
 - **MANDATORY:** A cap is always set.
 

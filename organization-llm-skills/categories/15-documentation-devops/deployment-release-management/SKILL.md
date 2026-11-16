@@ -26,7 +26,7 @@ Predictable, reversible releases.
 - Release planning.
 
 ## Organizational standards
-- **Verified convention:** promotion by branch (`devtest` -> `staging` -> `main`), SHA-tagged images per environment registry, PR validation with Azure Boards, shared package releases via tags `v<version>` on `main` (shared-package release workflow).
+- **Verified convention:** promotion by branch (`devtest` -> `staging` -> `main`), SHA-tagged images per environment registry, PR validation with Azure Boards, internal package releases via tags `v<version>` on `main`.
 - **MANDATORY:** Releases include: change notes (breaking changes flagged), flag states, migration steps, dependency/package versions, rollback tag, post-deploy verification (readiness, smoke).
 - **Known gap (not a standard):** How the image reaches the hosting service is not in the repos; document and ask.
 

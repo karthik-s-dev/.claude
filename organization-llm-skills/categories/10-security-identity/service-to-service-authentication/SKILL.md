@@ -29,7 +29,7 @@ Every internal call is authenticated and traceable.
 - **MANDATORY **outbound (internal key)**:** headers `x-internal-api-key`, `x-internal-api-caller: <service-name>`, `x-correlation-id`; skip with a log when the target URL or key is unset (best-effort), but fail closed for blocking paths.
 - **MANDATORY **inbound**:** authenticate every internal route (`requireInternalApiKey(allowedCallers?)` / `validateAuthToken()`); 401 missing/invalid; 403 caller not permitted; 503 when no keys configured (misconfiguration) - never open.
 - **Verified convention:** Callers register in an `INTERNAL_API_CALLER_REGISTRY`; the declared `x-internal-api-caller` that disagrees with the key's caller is logged as a mismatch.
-- **UNRESOLVED — do not enforce; report (C-12):** relax flags exist locally only; never in production.
+- **DECIDED (C-12, approved 2026-11-16):** Approved: add no new security-relax flags; existing ones must be guarded so they never apply in production. _Earlier note (superseded where it conflicts):_ relax flags exist locally only; never in production.
 
 _Source of truth: `SEC-02`, `SEC-03`, `CTX-02`, `INT-01`, `CFG-04`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 

@@ -33,8 +33,8 @@ Gives every service the same anatomy so engineers and AI assistants find logging
 - **MANDATORY:** Mount the single error middleware last for each API surface (ARCH-05, ERR-06).
 - **MANDATORY:** Expose probe endpoints and API docs per `health-endpoint-implementation` and `swagger-openapi`.
 - **Verified convention:** Layering `routes -> controllers -> services -> repositories/integrations -> shared infra` (ARCH-02).
-- **UNRESOLVED — do not enforce; report:** Folder/file naming style differs between the reference repos (C-17) - follow the target repository's existing style.
-- **UNRESOLVED — do not enforce; report:** Health, route and envelope naming differences are listed in `conflicts-and-open-decisions` (C-06, C-14, C-15).
+- **DECIDED (C-17, approved 2026-11-16):** Approved: follow the target repo's naming and layout. _Earlier note (superseded where it conflicts):_ Folder/file naming style differs between the reference repos (C-17) - follow the target repository's existing style.
+- **DECIDED (C-06, approved 2026-11-16):** Approved: every success response uses the envelope { success, message, data, metadata:{ correlationId, timestamp } }. _Earlier note (superseded where it conflicts):_ Health, route and envelope naming differences are listed in `conflicts-and-open-decisions` (C-06, C-14, C-15).
 
 _Source of truth: `ARCH-01`, `ARCH-02`, `ARCH-03`, `ARCH-05`, `ARCH-07`, `PKG-01`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 

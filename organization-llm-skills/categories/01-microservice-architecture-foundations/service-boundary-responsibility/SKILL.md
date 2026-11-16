@@ -29,7 +29,7 @@ Prevents shared-database/shared-cache coupling and unclear ownership, and keeps 
 - **MANDATORY:** A service owns its data; others access it through its API or events, never its datastore or cache keys. The reference reference service A owns subscription/configuration data; reference service B consumes it over HTTP and a change webhook.
 - **MANDATORY:** Internal calls carry `x-internal-api-key`, `x-internal-api-caller`, `x-correlation-id`; calls to Entra-protected APIs carry a Managed-Identity bearer (CTX-02, SEC-02).
 - **MANDATORY:** Internal endpoints live in a separate namespace and are authenticated fail-closed (SEC-03).
-- **UNRESOLVED — do not enforce; report:** One reference service reads another's Redis keys without a prefix (C-19) - do not replicate; propose an API/event contract.
+- **DECIDED (C-19, approved 2026-11-16):** Approved: replace cross-service cache reads with an API/event contract. _Earlier note (superseded where it conflicts):_ One reference service reads another's Redis keys without a prefix (C-19) - do not replicate; propose an API/event contract.
 - **Verified convention:** Change propagation uses a subscription webhook plus cache invalidation, not polling the owner's database.
 
 _Source of truth: `ARCH-07`, `CTX-02`, `SEC-03`, `SEC-02`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._

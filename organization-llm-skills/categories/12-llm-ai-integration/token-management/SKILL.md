@@ -24,7 +24,7 @@ Accurate, dedupable token usage.
 - Recording usage; enforcing token limits.
 
 ## Organizational standards
-- **Verified convention:** Token kinds `inputTokens`, `cachedInputTokens`, `outputTokens`, `reasoningTokens`, `embeddingInputTokens`, `transactions`; metric keys such as `llmInputTokens`; each recorded fact has a deterministic `usageEventId` (`usage-event-identity`), derived `aiCredits` event via `derivedUsageEventId`.
+- **Verified convention:** Token kinds `inputTokens`, `cachedInputTokens`, `outputTokens`, `reasoningTokens`, `embeddingInputTokens`, `transactions`; metric keys such as `llmInputTokens`; each recorded fact has a deterministic `usageEventId` (`usage-event-identity`), derived `aiCredits` event via a derived-ID helper.
 - **MANDATORY:** Token values are non-negative numbers validated at the API; calculated metrics (credits) cannot be supplied by callers (`CALCULATED_METRIC_FORBIDDEN`).
 - **Generic baseline (provisional):** Count tokens with the provider's usage response, not local estimation, except for pre-flight budgeting.
 

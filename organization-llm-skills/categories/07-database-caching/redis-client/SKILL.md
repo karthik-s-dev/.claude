@@ -31,7 +31,7 @@ Fast, bounded and safe cache/counter access.
 - **MANDATORY:** Log client events (`connect` debug, `error` error with hint, `close` warn, `reconnecting` debug); never log the password.
 - **MANDATORY:** Key naming `<domain>:<scope>:<id>` via a key-builder module (`redisKeys.ts`) - no inline string building in services; an optional service-wide `keyPrefix`.
 - **MANDATORY:** Provide `get/set/del` JSON helpers and `safe*` fail-open variants for cache use (`caching-strategy`); `closeRedis()` on shutdown.
-- **UNRESOLVED — do not enforce; report (C-19):** Reading another service's keys through a second no-prefix client bypasses that service's API - do not copy.
+- **DECIDED (C-19, approved 2026-11-16):** Approved: replace cross-service cache reads with an API/event contract. _Earlier note (superseded where it conflicts):_ Reading another service's keys through a second no-prefix client bypasses that service's API - do not copy.
 
 _Source of truth: `DB-02`, `RES-01`, `CFG-01`, `CFG-05`, `DB-06`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 

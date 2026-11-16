@@ -27,7 +27,7 @@ Trace IDs flow through standard instrumentation, not hand-rolled headers.
 ## Organizational standards
 - **MANDATORY:** Trace ID is separate from the correlation ID; propagate trace context via the standard instrumentation (W3C `traceparent`), not hand-rolled.
 - **Technology-specific (reference service A):** `applicationinsights` SDK, W3C mode (`AI_AND_W3C`), `trackTrace/Exception/Request`, mask-before-export, no-op when `APPLICATIONINSIGHTS_CONNECTION_STRING` is unset.
-- **Technology-specific (reference service B):** OpenTelemetry through `initOtelLogging({ serviceName, environment })` from the shared package (validates `OTEL_*`/App Insights env; SDK wiring is per-service) before any logging.
+- **Technology-specific (reference service B):** OpenTelemetry initialised once at startup before any logging (SDK wiring is per service; `OTEL_*` / `APPLICATIONINSIGHTS_CONNECTION_STRING` configuration).
 - **UNRESOLVED — do not enforce; report (C-10):** Estate APM choice not decided; follow the target repo; do not add a second APM.
 
 _Source of truth: `CTX-05`, `OBS-05`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
@@ -51,7 +51,7 @@ _Source of truth: `CTX-05`, `OBS-05`. If this section and the catalog disagree, 
 **OTEL init (reference)**
 
 ```ts
-initOtelLogging({ serviceName: "my-service", environment: process.env.NODE_ENV ?? "production" }); // before any logger usage
+initTelemetry({ serviceName: "my-service", environment: process.env.NODE_ENV ?? "production" }); // service-local OTEL bootstrap, before any logger usage
 ```
 
 ## Error and failure handling

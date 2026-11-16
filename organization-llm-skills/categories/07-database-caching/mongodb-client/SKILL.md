@@ -26,7 +26,7 @@ Consistent, safe and observable database connectivity.
 
 ## Organizational standards
 - **MANDATORY:** Connection string, user, password, DB name come from environment (`MONGO_DB_CONNECTION_STRING`, `MONGO_DB_USER`, `MONGO_DB_PASSWORD`, `MONGO_PLATFORM_ADMIN_DB_NAME`; usage services `USAGE_MONGO_URI`, `USAGE_DB_NAME`, `USAGE_MONGO_USER`, `USAGE_MONGO_PASSWORD`); never hard-coded; validated at startup (`required-environment-variables`).
-- **MANDATORY:** Use shared helpers where installed: `buildMongoConnectionString` (merges DB name before `?options`), `maskConnectionUri` for logs, `formatMongoConnectionError(label, err, maskedUri)` to wrap connect failures.
+- **MANDATORY:** Keep small local helpers: build the connection string so the DB name is inserted before any `?options`, `maskConnectionUri` for logs, and `formatMongoConnectionError(label, err, maskedUri)` to wrap connect failures.
 - **MANDATORY (mongoose profile):** `mongoose.createConnection(uri, { dbName, user, pass, maxPoolSize: MONGO_MAX_POOL_SIZE (default 50), serverSelectionTimeoutMS: 5000, socketTimeoutMS: 45000, connectTimeoutMS: 10000, retryWrites: true, retryReads: true }).asPromise()`; cache connections per database in a `Map`; log `connected | error | disconnected` events; use shared models from `@inextlabs/schema-models`.
 - **MANDATORY (native profile):** one `MongoClient` per repository module, lazy `connect()`, `client.db(name)`, typed `Collection<T>`, `ensure*Indexes()` at startup, `close()` exported and called on shutdown.
 - **MANDATORY:** Multi-tenant data is addressed by a tenant-resolved database/collection (never by a client-supplied DB name); resolve through the owning config.
@@ -57,7 +57,7 @@ let client: MongoClient | null = null; let db: Db | null = null;
 export async function initRepository(): Promise<void> {
   if (client) return;
   client = new MongoClient(config.mongo.uri);
-  try { await client.connect(); } catch (e) { throw formatMongoConnectionError("Repository", e as Error, maskConnectionUri(config.mongo.uri, 60)); }
+  try { await client.connect(); } catch (e) { throw formatMongoConnectionError("Repository", e as Error, maskConnectionUri(config.mongo.uri)); }
   db = client.db(config.mongo.dbName);
   await db.collection("items").createIndex({ productLine: 1, tenantId: 1, appId: 1, period: 1 }, { unique: true });
 }
@@ -104,7 +104,7 @@ export async function closeRepository() { await client?.close(); client = null; 
 
 **Skill-specific mandatory rules (violating any of these is a defect):**
 - Connection string, user, password, DB name come from environment (`MONGO_DB_CONNECTION_STRING`, `MONGO_DB_USER`, `MONGO_DB_PASSWORD`, `MONGO_PLATFORM_ADMIN_DB_NAME`; usage services `USAGE_MONGO_URI`, `USAGE_DB_NAME`, `USAGE_MONGO_USER`, `USAGE_MONGO_PASSWORD`); never hard-coded; validated at startup (`required-environment-variables`).
-- Use shared helpers where installed: `buildMongoConnectionString` (merges DB name before `?options`), `maskConnectionUri` for logs, `formatMongoConnectionError(label, err, maskedUri)` to wrap connect failures.
+- Keep small local helpers: build the connection string so the DB name is inserted before any `?options`, `maskConnectionUri` for logs, and `formatMongoConnectionError(label, err, maskedUri)` to wrap connect failures.
 - `mongoose.createConnection(uri, { dbName, user, pass, maxPoolSize: MONGO_MAX_POOL_SIZE (default 50), serverSelectionTimeoutMS: 5000, socketTimeoutMS: 45000, connectTimeoutMS: 10000, retryWrites: true, retryReads: true }).asPromise()`; cache connections per database in a `Map`; log `connected | error | disconnected` events; use shared models from `@inextlabs/schema-models`.
 - one `MongoClient` per repository module, lazy `connect()`, `client.db(name)`, typed `Collection<T>`, `ensure*Indexes()` at startup, `close()` exported and called on shutdown.
 - Multi-tenant data is addressed by a tenant-resolved database/collection (never by a client-supplied DB name); resolve through the owning config.

@@ -144,7 +144,7 @@ org:
 - UNRESOLVED (C-13): Service Bus/Queue Storage/Redis/Mongo use connection strings/keys; migration to identity-based access is pending approval.
 - MUST: Document required role assignments (e.g. "Azure Service Bus Data Sender") in `deployment-documentation`.
 impl:
-- Use `DefaultAzureCredential` only through the shared package for tokens; for SDK clients pass the credential object when approved.
+- Use `generateAuthToken()` from `@inextlabs/azure-oauth` (wraps `DefaultAzureCredential`) for tokens; for SDK clients pass the credential object when approved.
 ex: ts | GENERIC SDK identity form (pending approval for messaging)
 const sb = new ServiceBusClient(config.serviceBus.fullyQualifiedNamespace, new DefaultAzureCredential());
 /ex

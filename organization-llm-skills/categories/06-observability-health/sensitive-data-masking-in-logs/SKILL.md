@@ -28,7 +28,7 @@ Sensitive data never reaches log sinks.
 - **MANDATORY:** Define one `MASK_CONFIG: MaskConfig` per service extending the package defaults and reuse it for the logger, telemetry export (`createMasker(MASK_CONFIG)`) and audit entries.
 - **MANDATORY:** Package defaults (19): `email`, `phone`, `mobile` (partial); `password`, `passcode`, `otp`, `token`, `cookie`, `set-cookie`, `refreshToken`, `accessToken`, `apiKey`, `secret`, `clientSecret`, `cvv`, `ssn` (full); `jwt`, `authorization`, `creditCard` (partial). Strategies: `partial` | `full` | function.
 - **MANDATORY:** Extend with the service's actual field names (reference: `emailId`, `phoneNumber` partial; `key`, `endpoint`, `connectionString`, `connectionstring`, `conn_str` full). Re-audit when schemas change.
-- **MANDATORY:** Use `maskConnectionUri(uri, 60)` for URIs and `maskApiKeyForLog(key)` (last 4) for keys; `sanitizeLogMeta` from the shared package where available.
+- **MANDATORY:** Use a local `maskConnectionUri(uri)` helper for URIs and `maskApiKeyForLog(key)` (last 4) for keys; sanitize log metadata with the same mask.
 - **MANDATORY:** Never log request/response bodies, `req.headers`, or `process.env`.
 
 _Source of truth: `OBS-03`, `OBS-01`, `SEC-06`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
@@ -97,7 +97,7 @@ export const MASK_CONFIG: MaskConfig = {
 - Define one `MASK_CONFIG: MaskConfig` per service extending the package defaults and reuse it for the logger, telemetry export (`createMasker(MASK_CONFIG)`) and audit entries.
 - Package defaults (19): `email`, `phone`, `mobile` (partial); `password`, `passcode`, `otp`, `token`, `cookie`, `set-cookie`, `refreshToken`, `accessToken`, `apiKey`, `secret`, `clientSecret`, `cvv`, `ssn` (full); `jwt`, `authorization`, `creditCard` (partial). Strategies: `partial` | `full` | function.
 - Extend with the service's actual field names (reference: `emailId`, `phoneNumber` partial; `key`, `endpoint`, `connectionString`, `connectionstring`, `conn_str` full). Re-audit when schemas change.
-- Use `maskConnectionUri(uri, 60)` for URIs and `maskApiKeyForLog(key)` (last 4) for keys; `sanitizeLogMeta` from the shared package where available.
+- Use a local `maskConnectionUri(uri)` helper for URIs and `maskApiKeyForLog(key)` (last 4) for keys; sanitize log metadata with the same mask.
 - Never log request/response bodies, `req.headers`, or `process.env`.
 
 ## Related skills

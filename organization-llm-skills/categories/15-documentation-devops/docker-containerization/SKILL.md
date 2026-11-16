@@ -27,7 +27,7 @@ Small, secure, signal-correct images.
 - **MANDATORY (best observed pattern):** stage `builder` (`node:22-alpine`): `COPY package*.json .npmrc*`, `ARG AuthToken`/`ENV AuthToken`, `npm ci`, `rm -f .npmrc`, copy `tsconfig.json` + `src`, `npm run build`, `npm prune --omit=dev && npm cache clean --force`; stage `production`: `apk add dumb-init`, non-root user (`addgroup -g 1001 nodejs`, `adduser -S nodejs -u 1001`), `ENV NODE_ENV=production`, copy only `package*.json`, `node_modules`, `dist` (+ needed `docs`), `chown`, `USER nodejs`, `EXPOSE <PORT>`, `HEALTHCHECK`, `ENTRYPOINT ["dumb-init","--"]`, `CMD ["node","dist/index.js"]`.
 - **MANDATORY:** A `.dockerignore` excludes `.env*`, `.git`, `node_modules`, tests, docs not needed.
 - **MANDATORY (prohibition) (reference defects, C-20):** copying the whole build tree into the runtime stage, running as root, leaving `.npmrc`/tokens in layers, `CMD ["npm","run","start"]` (breaks signal delivery), unpinned/mismatched Node versions across services.
-- **UNRESOLVED — do not enforce; report:** Node 20 vs 22 (C-20) - follow the repo; propose alignment via ADR.
+- **DECIDED (C-20, approved 2026-11-16):** Approved: use the multi-stage, non-root, dumb-init, HEALTHCHECK Dockerfile pattern; the Node LTS version to align on is still open. _Earlier note (superseded where it conflicts):_ Node 20 vs 22 (C-20) - follow the repo; propose alignment via ADR.
 
 _Source of truth: `OPS-01`, `PKG-01`, `CFG-07`, `OBS-04`. If this section and the catalog disagree, the catalog wins — report the discrepancy. "Reference service A/B" are the two evidence services (see `governance/repository-analysis.md`); "C-xx" are open conflicts (see `governance/conflicts-and-open-decisions.md`)._
 

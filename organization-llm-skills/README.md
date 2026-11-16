@@ -8,6 +8,7 @@ An organization-wide engineering rulebook for AI coding assistants, reverse-engi
 | Stack of the evidence | Node.js / TypeScript / Express, Azure (Service Bus, Queue Storage, Redis, Mongo, Entra ID) |
 | Skills | see `inventory/skills-inventory.md` (15 categories; predefined + additional) |
 | Status / counts | `validation/completeness-report.md` |
+| Owner decisions | 2026-11-16: conflict recommendations approved (`governance/conflicts-and-open-decisions.md` §E); `@inextlabs/inflow-usage-utils` excluded (helpers are local) |
 
 ## How it is organized
 ```

@@ -21,7 +21,7 @@ Generated 2026-11-14.
 | `console.*` recommended anywhere | grep | none (only prohibitions) |
 | Error-code composition stated identically | grep `PLATFORM_CODE + SERVICE_CODE + MODULE_NUM` | 2 skills (canonical: `error-code-standards`; others reference it) |
 | Legacy code schemes presented as acceptable | grep `50xxx`/`INXT50` | none (only labelled legacy) |
-| Unresolved items presented as mandatory | Manual: every UNRESOLVED tag is rendered "do not enforce; report"; conflicts C-01..C-22 in `conflicts-and-open-decisions.md` | 30 skills carry UNRESOLVED notes, none tagged MANDATORY on the contested point |
+| Unresolved items presented as mandatory | Manual: every UNRESOLVED tag is rendered "do not enforce; report"; conflicts C-01..C-22 in `conflicts-and-open-decisions.md` | 20 skills carry UNRESOLVED notes, none tagged MANDATORY on the contested point |
 | Skills depend on a reference repo path/namespace | hard check | 0 violations |
 
 ## Standards usage

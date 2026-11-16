@@ -4,7 +4,7 @@
 1. Evidence is limited to two repositories (`inflow-config-service-repo`, `inflow-usage-enforcement-service`) and the **installed** `@inextlabs/*` packages in their `node_modules` (declarations, README, small sources). Other repositories in `D:\DEV` were not analysed. "Organization-wide" claims therefore rest on two services; single-repo findings are marked E2/E3 rather than organization-wide.
 2. Neither reference repository was modified. Files exist only under `D:\DEV\.claude\organization-llm-skills`.
 3. `.env` files exist in both working trees and were deliberately **not opened**; only `.env.example` was read. No secret value appears in this output. If a real secret is present in any working file it should be rotated — location only is reported here (`.env` in both repos, git-ignored).
-4. Package behaviour was read from the versions installed (`logger` 1.0.4, `platform-errors` 1.0.1, `azure-oauth` 1.0.7, `inflow-usage-utils` 1.3.0). Later versions may change APIs.
+4. Package behaviour was read from the versions installed (`logger` 1.0.4, `platform-errors` 1.0.1, `azure-oauth` 1.0.7) plus `inflow-usage-utils` 1.3.0 (read as evidence only; excluded from the ecosystem by owner decision 2026-11-16). Later versions may change APIs.
 5. The config repo's `docs/ENGINEERING_STANDARDS_MATRIX.md` (an earlier analysis of the same repo) was used as a lead and every cited claim that was used was re-verified in source; two corrections were made (outbox backoff is **linear**; `safe*` cache wrappers exist as `const` exports).
 
 ## What is treated as "organization-mandated"
