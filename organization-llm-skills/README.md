@@ -10,6 +10,7 @@ An organization-wide engineering rulebook for AI coding assistants, reverse-engi
 | Status / counts | `validation/completeness-report.md` |
 | Owner decisions | 2026-11-16: conflict recommendations approved (`governance/conflicts-and-open-decisions.md` §E); `@inextlabs/inflow-usage-utils` excluded (helpers are local) |
 
+
 ## How it is organized
 ```
 standards/organization-engineering-standards.md   <- single source of truth (IDs: PKG, ARCH, API, CTX, ERR, CFG, OBS, DB, MSG, INT, SEC, RES, LLM, TEST, DOC, OPS)
